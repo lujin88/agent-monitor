@@ -350,7 +350,9 @@ function prune() {
   let changed = false;
   for (const [id, s] of Object.entries(sessions)) {
     const age = now - s.updatedAt;
-    if (s.status === 'done' && age > DONE_RETENTION_MS) {
+    // "Status unknown" records expire like completed ones; otherwise they pile up forever.
+    // A record still holding a live approval request is never removed here.
+    if ((s.status === 'done' || (s.status === 'unobserved' && !requestsFor(id).length)) && age > DONE_RETENTION_MS) {
       delete sessions[id];
       changed = true;
     } else if (s.status === 'running' && s.stateSource !== 'chat-observer' && age > RUNNING_STALE_MS) {
