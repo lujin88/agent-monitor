@@ -1,0 +1,22 @@
+# Keep this local monitor's runtime data and credentials off GitHub.
+/*
+!/.gitignore
+!/*.js
+!/*.swift
+!/*.sh
+!/*.md
+!/index.html
+!/favicon.png
+!/package.json
+!/package-lock.json
+# Exclude backups even when they have a source-file extension.
+*backup*
+*.log
+*.json
+!package.json
+!package-lock.json
+token.txt
+.env*
+node_modules/
+*.app/
+screenshots/
