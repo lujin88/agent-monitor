@@ -16,7 +16,7 @@
 ## 当前结论（2026-10-01）
 
 - 本机：macOS 26.6.2，build 25G83。
-- 实际数据库：`/Users/lu/Library/Group Containers/group.com.apple.usernoted/db2/db`。
+- 实际数据库：`~/Library/Group Containers/group.com.apple.usernoted/db2/db`。
 - 文件存在。原程序只读打开返回 `Operation not permitted`；独立 Reader 实测返回 `full_disk_access_required`。
 - **尚未完成 Chat 或 Cowork 的真实通知验证，不能声称支持其后台跟踪。**
 - Claude Code 已有 hooks 配置。看板区分 hooks 配置与最后任务上报时间；历史上报不等于实时心跳，也不等于目前没有任务。
@@ -58,9 +58,9 @@
 
 ## 独立程序
 
-应用：`/Users/lu/agent-monitor/Agent Monitor Notifications.app`
+应用：`~/agent-monitor/Agent Monitor Notifications.app`
 
-源代码：`/Users/lu/agent-monitor/NotificationReader.swift`
+源代码：`~/agent-monitor/NotificationReader.swift`
 
 应用标识：`com.lu.agent-monitor.notifications`
 

@@ -1,5 +1,5 @@
 const assert=require('assert'),fs=require('fs'),vm=require('vm');
-const {JSDOM}=(()=>{for(const p of [process.env.JSDOM_PATH,'jsdom','/Users/lu/node_modules/jsdom'])if(p)try{return require(p)}catch(_){}throw Error('jsdom not found: npm install jsdom, or set JSDOM_PATH')})();
+const {JSDOM}=(()=>{for(const p of [process.env.JSDOM_PATH,'jsdom'])if(p)try{return require(p)}catch(_){}throw Error('jsdom not found: npm install jsdom, or set JSDOM_PATH')})();
 const html=fs.readFileSync(process.argv[2]||__dirname+'/index.html','utf8');
 for(const m of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(m[1]);
 const dom=new JSDOM('<div id="running-list"></div><div id="running-pill"></div>'),w=dom.window;

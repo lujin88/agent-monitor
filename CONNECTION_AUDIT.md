@@ -11,7 +11,7 @@
 | Codex usage | Live account query succeeded; recent timestamp | Polls every five minutes |
 | Cursor usage | Live query succeeded; primary pool 98.93%, Other models 27.04% at audit time | 98% boundary behavior tested; values naturally change |
 | Claude usage | Existing data approximately 7.8 hours old at 17:35 CEST | Comes from Claude Code status-line events, not the ordinary Claude chat app; shown as cached |
-| Ordinary Claude / ChatGPT / Grok chats | Installed observer still returns permission_required | Replace the old Accessibility entry with /Users/lu/agent-monitor/ChatObserver.app; then verify a real start and finish |
+| Ordinary Claude / ChatGPT / Grok chats | Installed observer still returns permission_required | Replace the old Accessibility entry with ~/agent-monitor/ChatObserver.app; then verify a real start and finish |
 | Grok Bot | Desktop app identified as com.anysphere.sand; not Grok Build CLI | Shares the ordinary-chat observer permission blocker |
 | Grok independent usage | No integration | Cursor Other models is not evidence of an independent Grok subscription quota |
 | Dashboard approval | Real harmless command resumed after user clicked Approve; user confirmed success | Single-click approval verified for Codex; six isolated Codex/Claude decision round trips also passed |

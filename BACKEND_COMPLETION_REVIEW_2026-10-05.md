@@ -35,6 +35,6 @@ A receipt confirms that the hook received and output a decision, **not** that th
 
 ## Deployment and rollback
 
-The reviewed branch is merged into this local checkout's `main`; there is no GitHub PR or remote merge. Before applying to `/Users/lu/agent-monitor`, the deployment script checks original source hashes and makes a complete local backup. It copies only reviewed source/test/document changes. It restarts the existing LaunchAgent only after two fresh zero-pending-approval checks and then verifies service health. The actual backup path, merge commit, file hashes and restart result are recorded beside the checkout in `backend-completion-deployment-20261005.json`.
+The reviewed branch is merged into this local checkout's `main`; there is no GitHub PR or remote merge. Before applying to `~/agent-monitor`, the deployment script checks original source hashes and makes a complete local backup. It copies only reviewed source/test/document changes. It restarts the existing LaunchAgent only after two fresh zero-pending-approval checks and then verifies service health. The actual backup path, merge commit, file hashes and restart result are recorded beside the checkout in `backend-completion-deployment-20261005.json`.
 
 For rollback, restore only the changed source files from that backup; do not overwrite live runtime state or credentials. Restart the existing service only after verifying there are no pending approvals.

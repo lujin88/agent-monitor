@@ -1,7 +1,7 @@
 // Needs your action / Ready to review: one card per app, every task reachable through
 // measured pages, own status per task, estimates distinct, blank empty state, English only.
 const assert = require('assert'), fs = require('fs'), vm = require('vm'), path = require('path');
-const {JSDOM} = (() => { for (const p of [process.env.JSDOM_PATH, 'jsdom', '/Users/lu/node_modules/jsdom']) if (p) try { return require(p); } catch (_) {} throw Error('jsdom not found: npm install jsdom, or set JSDOM_PATH'); })();
+const {JSDOM} = (() => { for (const p of [process.env.JSDOM_PATH, 'jsdom']) if (p) try { return require(p); } catch (_) {} throw Error('jsdom not found: npm install jsdom, or set JSDOM_PATH'); })();
 const html = fs.readFileSync(process.argv[2] || path.join(__dirname, 'index.html'), 'utf8');
 for (const m of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new vm.Script(m[1]);
 const w = new JSDOM('<div id="need-list"></div><div id="ready-list"></div>').window;
