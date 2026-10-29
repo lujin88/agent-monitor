@@ -172,7 +172,15 @@ Claude Code 和 Codex 在要弹批准窗口时，会先问 `approve.js`。Needs 
 - 在当前项目文件夹里新建、修改文件（Edit、Write）
 - 每一部分都是只读命令或常用开发命令的 shell 命令，比如 `ls`、`cat`、`git status/diff/log`、`git add/commit`、`node`、`python3`、`npm test`、`npm run …`、`mkdir`、`cp`、`mv`，而且所有路径都在项目文件夹里
 
-下面这些**照样问你**：删除（`rm` 等）、联网（`curl`、`git push/pull/fetch`、`npm install`、`npx`、网页工具）、`sudo`、改写 git 历史或丢弃改动（`reset --hard`、`checkout -- .`、`--amend`、`--force`）、项目外的路径、`.git` 里的文件、重定向 `>`、`$(...)`、变量和通配符、MCP 工具，以及任何没在上面列出的命令。
+另外自动授权以下精确形式：
+
+- Chrome DevTools：列出标签页、页面快照、截图、读取控制台和网络信息（不保存到文件）。
+- 切换已有标签页、等待页面文字（显式超时最多 60 秒）、调整窗口尺寸（每边 1–8192 像素）。这些浏览器操作不要求项目目录；未知参数仍需确认。
+- `git pull --ff-only`，以及对 `origin/upstream` 的 `git ls-remote` 查询。快进拉取会修改本地文件，并可能执行已配置的 Git hooks，不是只读操作。
+
+下面这些**照样问你**：删除、其他联网命令（如 `curl`、普通 pull、push、fetch、安装）、`sudo`、强制覆盖或改写 Git 历史、项目外文件路径、`.git` 写入、重定向、变量与通配符，以及未知工具。浏览器点击、填表、上传、执行脚本或保存输出到文件也不自动放行。
+
+新请求会重新加载规则，无需重启 Monitor；已弹出的旧请求不会补批。这些规则不能取消宿主应用自身的强制审批。验证命令：`node test-auto-approve.js`。
 
 注意：`node`、`python3`、`npm test` 运行的是项目里的代码，代码能做什么，它们就能做什么。这是有意放开的。
 

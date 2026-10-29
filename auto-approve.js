@@ -6,8 +6,15 @@
 //   - file edits (Edit, Write, MultiEdit, NotebookEdit) inside the project folder
 //   - shell commands where every part is a read-only or common development command
 //     and every path stays inside the project folder
-// Always asked: deleting, network access, git push / history rewrites, sudo, installs,
-// writing outside the project, shell redirection or substitution, MCP and web tools.
+// Also allowed: exact git pull --ff-only, and ls-remote queries to origin/upstream.
+// Pull updates local files and may run configured Git hooks; it is not read-only.
+// Always asked: deleting, other network access, git push / history rewrites, sudo, installs,
+// writing outside the project, shell redirection or substitution, unknown MCP and web tools.
+// Known Chrome DevTools observation tools below may run without asking, but saving
+// browser data to disk and other browser actions still require a decision.
+// Window resizing is separately allowed with bounded integer dimensions.
+// Selecting existing tabs and waiting for text are also allowed. These browser
+// operations do not need a project cwd; filesystem/shell rules below still do.
 //
 // classify() never throws; it returns { allow: true, rule } or { allow: false, reason }.
 // Turn auto-approval off with AUTO_APPROVE=off in the agent's environment.
@@ -17,6 +24,20 @@ const path = require('path');
 const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const SHELL_TOOLS = new Set(['Bash', 'shell', 'local_shell', 'exec_command', 'container.exec']);
+
+// Exact names and input keys, not a wildcard such as "mcp__*" or "get_*".
+// Reject new/unknown options so a future tool version cannot silently add writes.
+const BROWSER_READ_INPUTS = {
+  list_pages: [],
+  take_snapshot: ['pageId', 'verbose'],
+  take_screenshot: ['pageId', 'format', 'fullPage', 'quality', 'uid'],
+  list_console_messages: ['pageId', 'pageIdx', 'pageSize', 'types', 'includePreservedMessages', 'includeStackTraces', 'serviceWorkerId'],
+  get_console_message: ['pageId', 'msgid'],
+  list_network_requests: ['pageId', 'pageIdx', 'pageSize', 'resourceTypes', 'includePreservedRequests'],
+  get_network_request: ['pageId', 'reqid'],
+};
+const BROWSER_READ_TOOLS = new Map(Object.entries(BROWSER_READ_INPUTS)
+  .map(([name, keys]) => ['mcp__chrome_devtools__' + name, new Set(keys)]));
 
 // First word of a command -> 'read' | 'dev' | function(args) returning 'read' | 'dev' | null.
 const READ_COMMANDS = ['ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'printf', 'which', 'file', 'stat', 'du', 'df',
@@ -105,6 +126,19 @@ function commandKind(argv) {
     // will run. Anywhere, --output writes files and --ext-diff/--exec-path run other programs.
     if (global.some((a) => a !== '--no-pager')) return null;
     if (args.some((a) => /^--(git-dir|work-tree|output|exec-path|ext-diff)/.test(a))) return null;
+    const rest = args.slice(at + 1);
+    if (sub === 'pull') {
+      // Only use the configured upstream. No URLs, refspecs, config overrides,
+      // rebase/merge flags, submodule options, or remote helpers from the request.
+      return rest.length === 1 && rest[0] === '--ff-only' ? 'dev' : null;
+    }
+    if (sub === 'ls-remote') {
+      let i = 0;
+      const flags = new Set(['--heads', '--tags', '--refs', '--exit-code', '--quiet']);
+      while (flags.has(rest[i])) i++;
+      if (!['origin', 'upstream'].includes(rest[i++])) return null;
+      return rest.slice(i).every((ref) => /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(ref) && !ref.includes('..')) ? 'read' : null;
+    }
     if (sub === 'branch' && args.some((a) => /^-[a-zA-Z]*[dDmM]/.test(a))) return null; // delete/rename branches
     if (sub === 'tag' && args.some((a) => /^-[a-zA-Z]*d/.test(a))) return null;
     if (sub === 'remote' && args.some((a) => ['add', 'remove', 'rm', 'set-url', 'rename'].includes(a))) return null;
@@ -116,7 +150,7 @@ function commandKind(argv) {
     if (sub === 'commit' && args.some((a) => a === '--amend')) return null;
     if (GIT_READ.has(sub)) return 'read';
     if (GIT_DEV.has(sub)) return 'dev';
-    return null; // push, pull, fetch, clone, reset, clean, rebase, merge, ...
+    return null; // push, fetch, clone, reset, clean, rebase, merge, ...
   }
   if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') {
     const sub = args.find((a) => !a.startsWith('-'));
@@ -189,7 +223,46 @@ function classify(p, env = process.env) {
     const tool = typeof p.tool_name === 'string' ? p.tool_name : '';
     const input = p.tool_input && typeof p.tool_input === 'object' ? p.tool_input : {};
     const cwd = typeof p.cwd === 'string' && path.isAbsolute(p.cwd) ? path.resolve(p.cwd) : null;
-    // Without a project folder there is nothing to keep requests inside.
+
+    if (tool === 'mcp__chrome_devtools__select_page' || tool === 'mcp__chrome_devtools__wait_for') {
+      const selecting = tool === 'mcp__chrome_devtools__select_page';
+      const keys = selecting ? ['pageId', 'bringToFront'] : ['pageId', 'text', 'timeout'];
+      const validOptions = selecting
+        ? (input.bringToFront === undefined || typeof input.bringToFront === 'boolean')
+        : (Array.isArray(input.text) && input.text.length > 0 && input.text.length <= 100 &&
+          input.text.every((value) => typeof value === 'string' && value.trim().length > 0 && value.length <= 10000) &&
+          (input.timeout === undefined || (Number.isSafeInteger(input.timeout) && input.timeout >= 0 && input.timeout <= 60000)));
+      if (!p.tool_input || Array.isArray(p.tool_input) ||
+          Object.keys(input).some((key) => !keys.includes(key)) ||
+          !Number.isSafeInteger(input.pageId) || input.pageId < 0 || !validOptions) {
+        return { allow: false, reason: 'invalid browser selection or wait parameters' };
+      }
+      return { allow: true, rule: selecting ? 'select existing browser page' : 'wait for browser text' };
+    }
+
+    if (tool === 'mcp__chrome_devtools__resize_page') {
+      const keys = ['pageId', 'width', 'height'];
+      if (!p.tool_input || Array.isArray(p.tool_input) ||
+          Object.keys(input).some((key) => !keys.includes(key)) ||
+          !Number.isSafeInteger(input.pageId) || input.pageId < 0 ||
+          !['width', 'height'].every((key) => Number.isSafeInteger(input[key]) && input[key] >= 1 && input[key] <= 8192)) {
+        return { allow: false, reason: 'invalid browser resize parameters' };
+      }
+      return { allow: true, rule: 'browser window resize' };
+    }
+
+    if (BROWSER_READ_TOOLS.has(tool)) {
+      if (!p.tool_input || typeof p.tool_input !== 'object' || Array.isArray(p.tool_input)) {
+        return { allow: false, reason: 'invalid browser input' };
+      }
+      const keys = BROWSER_READ_TOOLS.get(tool);
+      if (Object.keys(input).some((key) => !keys.has(key))) {
+        return { allow: false, reason: 'browser output path or unknown option' };
+      }
+      return { allow: true, rule: 'read-only browser inspection' };
+    }
+
+    // Filesystem and shell permissions still require a bounded project folder.
     if (!cwd || cwd === '/' || cwd === path.resolve(require('os').homedir())) return { allow: false, reason: 'no project folder' };
 
     if (READ_TOOLS.has(tool)) {
