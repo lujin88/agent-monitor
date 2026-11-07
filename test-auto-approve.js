@@ -271,6 +271,38 @@ const gitChanges = ['git branch --delete x', 'git branch --delete --force x', 'g
   'git tag -f v1', 'git tag --force v1', 'git tag -s v2', 'git --no-pager tag --delete v1'];
 for (const c of gitChanges) assert.equal(bash(c).allow, false, 'branch/tag change should ask: ' + c);
 
+// QA-reproduced bypasses (review of ceb0fe1): one step writes outside the project,
+// runs a command, or throws away uncommitted work. All go to the normal approval.
+const qaBypasses = [
+  'cd && cp a.js x', 'cd', 'cd -', 'cd && cp a.js .zshrc', 'cd -- && touch x',
+  "sed -n 'w /tmp/x' a.js", "sed -n '1w out.txt' a.js", "sed 'W /tmp/x' a.js", "sed 's/a/b/w /tmp/x' a.js",
+  "sed 's/a/b/e' a.js", "sed -e 'e id' a.js", "sed -n -e 1p -e 'w /tmp/x' a.js", "sed --expression='w /tmp/x' a.js",
+  "sed 'r /etc/passwd' a.js", 'sed -f script.sed a.js', "sed -i '' '1w /tmp/x' a.js",
+  'sort -o/tmp/x a.txt', 'sort -o /tmp/x a.txt', 'sort --output=/tmp/x a.txt', 'uniq a.txt /tmp/x', 'tree -o/tmp/x',
+  'git checkout -f', 'git checkout -f main', 'git checkout --force main', 'git checkout -B main', 'git checkout -p',
+  'git checkout --ours a.js', 'git checkout --theirs a.js', 'git checkout -m main', 'git checkout HEAD~1 -- a.js',
+  'git checkout main a.js', 'git checkout --discard-changes main',
+  'git restore --staged --worktree .', 'git restore --worktree a.js', 'git restore -SW a.js', 'git restore -W a.js',
+  'git restore --source=HEAD a.js', 'git switch -f main', 'git switch --discard-changes main', 'git switch -C main',
+  'git switch --force-create main', 'git mv -f a.js b.js',
+  'rg --pre=sh x', 'rg --pre sh x', "awk 'BEGIN{while((\"id\" | getline l)>0)print l}'",
+  "awk '{getline line < \"/etc/passwd\"}'", "awk '{print $1 > \"/tmp/x\"}' a.txt", "awk '{printf \"%s\", $1 > \"/tmp/x\"}' a.txt",
+  "awk '{print | \"sh\"}' a.txt", "awk 'BEGIN{\"id\"|getline x; print x}'", "awk 'BEGIN{\"id\" |getline x}'", "awk 'BEGIN{system(\"id\")}'",
+  'make -f -', 'make -f-', 'make --file=-', 'make --makefile -', 'echo all: | make -f -',
+  'python3 -I -m pip install x', 'python3 -Impip install x', 'python3 -B -m pip install x', 'python -m venv .venv',
+  'python3 -I -m http.server',
+];
+for (const c of qaBypasses) assert.equal(bash(c).allow, false, 'QA bypass should ask: ' + JSON.stringify(c));
+const stillRoutine = [
+  'cd src && ls', "sed -n '1,20p' a.js", "sed 's/foo/bar/g' a.js", "sed -E 's#a/b#c/d#g' a.js", "sed -i '' 's/a/b/' a.js",
+  "sed -i.bak 's/a/b/' a.js", "sed -n '10,$p' a.js", "sed -e 1d -e 's/x/y/' a.js", 'sort a.txt', 'sort -o out.txt a.txt',
+  'sort -n -r a.txt', 'uniq a.txt', 'uniq -c a.txt', 'git checkout main', 'git checkout -b feat', 'git checkout -b feat origin/main',
+  'git checkout feat/x', 'git restore --staged a.js', 'git switch main', 'git switch -c feat', 'git mv a.js b.js',
+  'rg -n foo src', "awk '{print $1}' a.txt", "awk -F, '{print $2}' a.csv",
+  'make', 'make test', 'make -C src', 'make -f build.mk', 'python3 -m pytest -q', 'python3 -I tool.py',
+];
+for (const c of stillRoutine) assert.equal(bash(c).allow, true, 'routine command must stay automatic: ' + c + ' (' + bash(c).reason + ')');
+
 // Paths that resolve outside the project through .. or a symlink.
 const linkRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-policy-')));
 const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-outside-')));
@@ -315,4 +347,4 @@ try {
   fs.rmSync(outside, { recursive: true, force: true });
 }
 
-console.log(`Auto-approve passed: ${allowed.length + routineDev.length + gitListing.length} commands approved, ${asked.length + inline.length + agentConfig.length + gitChanges.length} still asked, inline code / symlink / agent config / branch-tag rules, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);
+console.log(`Auto-approve passed: ${allowed.length + routineDev.length + gitListing.length + stillRoutine.length} commands approved, ${asked.length + inline.length + agentConfig.length + gitChanges.length + qaBypasses.length} still asked, inline code / symlink / agent config / branch-tag / QA bypass rules, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);

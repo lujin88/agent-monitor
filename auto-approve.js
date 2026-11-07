@@ -208,6 +208,103 @@ function inlineCode(argv, piped) {
   return script === '-' || (piped && script === null);
 }
 
+// sed scripts: w/W write files, e runs commands, r/R read any file, s///w and s///e too.
+// Parses each script; anything it cannot read with confidence asks.
+function sedScriptSafe(script) {
+  let i = 0;
+  const n = script.length;
+  const skipRegex = (d) => { // after an opening delimiter d; returns false if unterminated
+    for (i++; i < n; i++) { if (script[i] === '\\') { i++; continue; } if (script[i] === d) return true; if (script[i] === '\n') return false; }
+    return false;
+  };
+  while (i < n) {
+    const c = script[i];
+    if (/[\s;!{}]/.test(c)) { i++; continue; }
+    if (/[0-9$,~+IM]/.test(c)) { i++; continue; } // addresses and regex address flags
+    if (c === '/') { if (!skipRegex('/')) return false; i++; continue; }
+    if (c === '\\') { i++; if (i >= n || !skipRegex(script[i])) return false; i++; continue; }
+    if (c === 's' || c === 'y') {
+      i++;
+      const d = script[i];
+      if (!d || /[\s\\\n]/.test(d)) return false;
+      i--; // skipRegex starts after the delimiter position
+      i++; if (!skipRegex(d)) return false; // pattern
+      if (!skipRegex(d)) return false; // replacement
+      i++;
+      if (c === 's') {
+        const flags = /^[gpiImMe0-9w]*/.exec(script.slice(i))[0];
+        if (/[we]/.test(flags)) return false;
+        i += flags.length;
+      }
+      continue;
+    }
+    if ('wWerR'.includes(c)) return false;
+    if ('aic'.includes(c)) { while (i < n && script[i] !== '\n') i++; continue; } // text to end of line
+    if ('btT:'.includes(c)) { i++; while (i < n && !/[;\n}]/.test(script[i])) i++; continue; } // labels
+    if (/[pPdDnNgGhHxlq=zF#]/.test(c)) { if (c === '#') { while (i < n && script[i] !== '\n') i++; } else i++; continue; }
+    if (c === 'Q' || c === 'L') { i++; continue; }
+    return false;
+  }
+  return true;
+}
+function sedScriptsSafe(args) {
+  const scripts = [];
+  let first = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-f' || a.startsWith('--file') || /^-[a-zA-Z]*f/.test(a) && !a.startsWith('--')) return false; // script from a file
+    if (a === '-e' || a === '--expression') { scripts.push(args[++i] ?? ''); continue; }
+    if (a.startsWith('--expression=')) { scripts.push(a.slice(13)); continue; }
+    if (/^-[a-zA-Z]*e./.test(a) && !a.startsWith('--')) { scripts.push(a.slice(a.indexOf('e') + 1)); continue; }
+    if (a === '-i' && (args[i + 1] === '' || /^\./.test(args[i + 1] || ''))) { i++; continue; } // BSD -i '' / -i .bak
+    if (a.startsWith('-')) continue;
+    if (first === null) first = a;
+  }
+  if (!scripts.length && first !== null) scripts.push(first);
+  return scripts.every(sedScriptSafe);
+}
+
+// python -m <module>, also after other options (-I -m pip) or attached (-mpip).
+function pythonModule(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--' || !a.startsWith('-') || a === '-') return null;
+    if (a.startsWith('--')) continue;
+    for (let j = 1; j < a.length; j++) {
+      if (a[j] === 'm') return j === a.length - 1 ? (args[i + 1] ?? null) : a.slice(j + 1);
+      if ('WX'.includes(a[j])) { if (j === a.length - 1) i++; break; }
+      if (a[j] === 'c') return null;
+    }
+  }
+  return null;
+}
+
+// git checkout: only switching or creating branches. Force, patch/ours/theirs/merge,
+// pathspecs (--, ., or a name that exists as a file or folder) throw away changes.
+function gitCheckoutSafe(rest, base) {
+  const positional = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '-b' || a === '--track' || a === '-t') { if (a === '-b') i++; continue; }
+    if (a === '--detach' || a === '-q' || a === '--quiet' || a === '--no-track') continue;
+    if (a.startsWith('-')) return false; // -f, --force, -B, -p, --ours, --theirs, -m, --merge, --discard-changes, --
+    positional.push(a);
+  }
+  if (positional.length > 1) return false;
+  if (positional.length === 1) {
+    const p = positional[0];
+    if (p === '.' || p.startsWith(':')) return false;
+    try { fs.lstatSync(path.resolve(base || '/', p)); return false; } catch (_) { /* not a path: a branch or commit */ }
+  }
+  return true;
+}
+// git restore only touching the index (--staged without --worktree) keeps working files.
+function gitRestoreIndexOnly(rest) {
+  const staged = rest.includes('--staged'); // as before; -S is not added here
+  const worktree = rest.some((a) => a === '--worktree' || /^-[a-zA-Z]*W/.test(a) && !a.startsWith('--'));
+  return staged && !worktree;
+}
+
 function sedInPlaceOrExec(args) { return args.some((a) => /^-[a-zA-Z]*i/.test(a) || /^--in-place/.test(a)) ? 'dev' : 'read'; }
 
 // git branch / git tag in a listing form only: query options, and names only as
@@ -239,7 +336,7 @@ function gitListOnly(sub, rest) {
   return true;
 }
 
-function commandKind(argv) {
+function commandKind(argv, base) {
   const [cmd, ...args] = argv;
   if (cmd === 'git') {
     const at = args.findIndex((a) => !a.startsWith('-')), sub = args[at], global = at < 0 ? args : args.slice(0, at);
@@ -265,8 +362,11 @@ function commandKind(argv) {
     if ((sub === 'branch' || sub === 'tag') && !gitListOnly(sub, rest)) return null;
     if (sub === 'remote' && args.some((a) => ['add', 'remove', 'rm', 'set-url', 'rename'].includes(a))) return null;
     if (sub === 'config' && !args.some((a) => ['--get', '--list', '-l', '--get-all'].includes(a))) return null;
-    if (sub === 'checkout' && args.some((a) => a === '--' || a === '.')) return null; // discards local changes
-    if (sub === 'restore' && !args.includes('--staged')) return null; // discards local changes
+    // Anything that can throw away uncommitted work asks.
+    if (sub === 'checkout' && !gitCheckoutSafe(rest, base)) return null;
+    if (sub === 'switch' && rest.some((a) => /^(-f|--force|--discard-changes|-C|--force-create|--merge|-m)$/.test(a) || /^-[a-zA-Z]*[fCm]/.test(a) && !a.startsWith('--'))) return null;
+    if (sub === 'restore' && !gitRestoreIndexOnly(rest)) return null;
+    if (sub === 'mv' && rest.some((a) => a === '-f' || a === '--force' || /^-[a-zA-Z]*f/.test(a) && !a.startsWith('--'))) return null;
     if (sub === 'stash' && args.some((a) => ['drop', 'clear', 'pop'].includes(a))) return null;
     if (sub === 'worktree' && args.some((a) => ['remove', 'prune'].includes(a))) return null;
     if (sub === 'commit' && args.some((a) => a === '--amend')) return null;
@@ -280,11 +380,21 @@ function commandKind(argv) {
     return NPM_DEV.has(sub) ? 'dev' : null; // install, ci, publish, add, update, ...
   }
   if (cmd === 'find') return args.some((a) => ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'].includes(a)) ? null : 'read';
-  if (cmd === 'sed') return sedInPlaceOrExec(args);
-  if (cmd === 'awk' && args.some((a) => /system\s*\(|print\s*>|\|\s*"/.test(a))) return null;
+  if (cmd === 'sed') return sedScriptsSafe(args) ? sedInPlaceOrExec(args) : null;
+  // awk can run commands (system, pipes, getline) and write files (print > f).
+  if (cmd === 'awk' && args.some((a) => /system\s*\(|getline|>|\|/.test(a))) return null;
   if (cmd === 'python' || cmd === 'python3') {
-    if (args[0] === '-m' && ['pip', 'http.server', 'venv', 'ensurepip'].includes(args[1])) return null;
+    if (['pip', 'pip3', 'http.server', 'venv', 'ensurepip'].includes(pythonModule(args))) return null;
   }
+  // Output options make read-only tools write files; treat them as development commands
+  // so the written path gets the full project/symlink checks.
+  if (cmd === 'sort' && args.some((a) => /^(-[a-zA-Z]*o|--output)/.test(a))) return 'dev';
+  if (cmd === 'uniq' && args.filter((a) => !a.startsWith('-')).length >= 2) return 'dev';
+  if (cmd === 'tree' && args.some((a) => /^-[a-zA-Z]*o/.test(a))) return 'dev';
+  // ripgrep --pre runs any program on every searched file.
+  if (cmd === 'rg' && args.some((a) => /^--pre(=|$)/.test(a))) return null;
+  // make -f - reads the makefile (that is, commands) from stdin.
+  if (cmd === 'make' && args.some((a, i) => /^(-f|--file|--makefile)$/.test(a) && args[i + 1] === '-' || /^(-f-|--(file|makefile)=-)$/.test(a))) return null;
   if (cmd === 'tail' && args.some((a) => a === '-f' || a === '-F')) return null; // never ends
   if (READ_COMMANDS.includes(cmd)) return 'read';
   if (DEV_COMMANDS.includes(cmd)) return 'dev';
@@ -377,7 +487,8 @@ function classifyShell(script, cwd) {
         argv.splice(i, 2);
       }
     }
-    const k = commandKind(argv);
+    if (argv[0] === 'cd' && (argv.length < 2 || argv[1] === '-' || argv[1] === '--')) return { allow: false, reason: 'cd leaves the project' };
+    const k = commandKind(argv, commandBase);
     if (!k) return { allow: false, reason: `${argv[0]} needs your decision` };
     if (inlineCode(argv, piped)) return { allow: false, reason: 'runs inline code' };
     if (!pathsInside(argv, commandBase)) return { allow: false, reason: 'path outside the project' };
@@ -386,7 +497,9 @@ function classifyShell(script, cwd) {
       // Follow symlinks and keep agent permission files out of reach.
       if (!realInside(cwd, commandBase)) return { allow: false, reason: 'folder outside the project' };
       for (const a of argv.slice(1)) {
-        const value = a.startsWith('-') ? (/^--?[^=]+=(.+)$/.exec(a) || [])[1] : a;
+        // --flag=value, or a short option with an attached path (-o/abs/file).
+        const value = !a.startsWith('-') ? a
+          : ((/^--?[^=]+=(.+)$/.exec(a) || [])[1] ?? (/^-[a-zA-Z](.*\/.*)$/.exec(a) || [])[1]);
         if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) continue;
         if (a.startsWith('-') && !inside(commandBase, value)) return { allow: false, reason: 'path outside the project' };
         if (!realInside(cwd, path.resolve(commandBase, value))) return { allow: false, reason: 'path outside the project' };
