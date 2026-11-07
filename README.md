@@ -185,11 +185,18 @@ Claude Code 和 Codex 在要弹批准窗口时，会先问 `approve.js`。Needs 
 - 改 agent 自己的权限和 hook 文件：任何 `.claude/`、`.codex/` 目录，以及 `settings*.json`、`hooks.json`。读取不受影响。
 - `git branch` / `git tag` 除列表形式（`git branch`、`-a`、`-r`、`-v`、`--show-current`、`--list 模式`、`--contains X`；`git tag`、`-l`、`-n`）以外的所有写法，包括 `--delete`、`--move`、`--copy`、`-f`、创建新分支或标签。
 
+- Agent Monitor 自己所在的文件夹（规则文件、`token.txt`、日志）：读和写都要问。
+- 安装和拉远程代码：`bun` 只放行 `run/test/build`，`go` 只放行 `build/test/vet/fmt/env/version` 和本地路径的 `run`（`go env -w` 要问），`cargo` 只放行 `build/test/check/run`，`deno` 只放行 `run/test/check/fmt/lint/task` 且不能带 `npm:`/`jsr:`/网址；`npm exec` 要问。
+- `--inspect` 调试端口只能开在 `127.0.0.1` 或 `localhost`。
+- 会写文件、执行命令或丢掉没提交改动的写法：不带参数的 `cd`、`sed` 的 `w/e/r` 命令和 `-f`、`sort -o`、带 getline 或管道的 `awk`、`rg --pre`、`make -f -` / `--eval`、`swift -`、强制或带路径的 `git checkout`、`git restore --worktree`、`git switch -f`、`git mv -f`。
+
 还有：删除、其他联网命令（如 `curl`、普通 pull、push、fetch、安装）、`sudo`、强制覆盖或改写 Git 历史、项目外文件路径、`.git` 写入、重定向、变量与通配符，以及未知工具。浏览器点击、填表、上传、执行脚本或保存输出到文件也不自动放行。
 
 新请求会重新加载规则，无需重启 Monitor；已弹出的旧请求不会补批。这些规则不能取消宿主应用自身的强制审批。验证命令：`node test-auto-approve.js`。
 
-注意：`node`、`python3`、`npm test` 运行的是项目里的代码，代码能做什么，它们就能做什么。这是有意放开的。
+注意：`node`、`python3`、`npm test` 运行的是项目里的代码，代码能做什么，它们就能做什么。这是有意放开的（少收审批）。
+
+**这意味着自动审批只能防 agent 失手，防不了存心使坏的 agent**：agent 可以先写一个脚本（自动批准），再运行它（自动批准）。这个脚本能读 `token.txt`，再调用 `/decide`，把它自己在看板上排队的审批批掉。同样是两步的还有：改 `.husky/pre-commit` 再 `git commit`、改 `package.json` 的 scripts 再 `npm test`、改 `Makefile` 再 `make`。真要防住，需要让 agent 用另一个 macOS 用户运行，读不到这个文件夹。
 
 自动批准会在 `auto-approve.log` 记一行（时间、来源、工具、规则、项目名），**不记命令内容**。要关掉：在 Claude Code / Codex 的启动环境里设 `AUTO_APPROVE=off`。
 

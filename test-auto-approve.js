@@ -303,6 +303,50 @@ const stillRoutine = [
 ];
 for (const c of stillRoutine) assert.equal(bash(c).allow, true, 'routine command must stay automatic: ' + c + ' (' + bash(c).reason + ')');
 
+// QA review "should fix" items S1-S4: more ways to run code, installs, debugger ports.
+const shouldFix = [
+  'echo x | swift -', 'swift -', 'echo x | swift', 'make --eval=x', 'make --eval x', 'make -E x',
+  "awk 'BEGIN{c=\"sh\"; print \"id\" | c}'", "awk 'BEGIN{\"touch x\" | getline}'", 'rg --pre-glob x --pre sh y',
+  'bun install', 'bun add x', 'bun x pkg', 'bun create x', 'bun script.ts', 'bun upgrade',
+  'go install example.com/x@latest', 'go run example.com/x@latest', 'go run pkg@v1', 'go env -w GOPROXY=x', 'go get x', 'go generate',
+  'go mod download', 'cargo install ripgrep', 'cargo add serde', 'cargo publish', 'npm exec --yes -- pkg', 'npm exec pkg',
+  'deno run npm:pkg', 'deno run jsr:@x/y', 'deno run https://x.y/mod.ts', 'deno install x', 'deno compile main.ts',
+  'node --inspect=0.0.0.0:9229 app.js', 'node --inspect-brk=0.0.0.0:9229 app.js', 'node --inspect=192.168.1.5:9229 app.js',
+  'node --inspect-port 0.0.0.0:9229 app.js', 'node --inspect-port=0.0.0.0:9229 app.js', 'bun --inspect=0.0.0.0:6499 run x',
+  'deno run --inspect=0.0.0.0:9229 main.ts', 'node --inspect=[::]:9229 app.js',
+];
+for (const c of shouldFix) assert.equal(bash(c).allow, false, 'should ask: ' + JSON.stringify(c));
+const shouldFixRoutine = [
+  'swift build', 'swift test', 'swift run', 'make', 'bun run build', 'bun test', 'bun build ./src/index.ts', 'bun --version',
+  'go build ./...', 'go test ./...', 'go vet ./...', 'go fmt ./...', 'go run .', 'go run ./cmd/tool', 'go run main.go', 'go env',
+  'go env GOPATH', 'go version', 'cargo build', 'cargo test', 'cargo check', 'cargo run', 'cargo +nightly build', 'cargo --version',
+  'deno run main.ts', 'deno test', 'deno fmt', 'deno lint', 'deno task dev', 'npm run build', 'npm test',
+  'pnpm exec next dev --port 4620', 'yarn exec tsc',
+  'node --inspect app.js', 'node --inspect=9229 app.js', 'node --inspect=127.0.0.1:9229 app.js', 'node --inspect=localhost:9229 app.js',
+  'node --inspect-brk app.js', 'node --inspect-port 9230 app.js',
+];
+for (const c of shouldFixRoutine) assert.equal(bash(c).allow, true, 'routine command must stay automatic: ' + c + ' (' + bash(c).reason + ')');
+// S4: the Agent Monitor folder (where this file lives) is protected for reads and writes.
+{
+  const here = fs.realpathSync(__dirname), parent = path.dirname(here);
+  const at = (tool_name, tool_input, cwd) => classify({ tool_name, cwd, tool_input }, env).allow;
+  assert.equal(at('Read', { file_path: path.join(here, 'token.txt') }, here), false, 'reading the token asks');
+  assert.equal(at('Read', { file_path: path.join(here, 'README.md') }, here), false, 'anything in the monitor folder asks');
+  assert.equal(at('Edit', { file_path: path.join(here, 'auto-approve.js') }, here), false, 'editing the rules asks');
+  assert.equal(at('Edit', { file_path: path.join(here, 'auto-approve.js') }, parent), false, 'also from a parent project');
+  assert.equal(at('Read', { file_path: path.join(here, 'token.txt') }, parent), false);
+  assert.equal(at('Grep', { pattern: 'x' }, parent), false, 'a search from a parent folder would read the token');
+  assert.equal(at('Glob', { pattern: '*', path: parent }, parent), false);
+  for (const command of ['cat token.txt', 'ls', 'git status', 'node test-auto-approve.js']) {
+    assert.equal(at('Bash', { command }, here), false, 'shell in the monitor folder asks: ' + command);
+  }
+  const name = path.basename(here);
+  for (const command of ['cat ' + name + '/token.txt', 'cp x ' + name + '/auto-approve.js', 'sed -n 1p ' + name + '/token.txt']) {
+    assert.equal(at('Bash', { command }, parent), false, 'path into the monitor folder asks: ' + command);
+  }
+  assert.equal(at('Bash', { command: 'ls' }, parent), true, 'other commands in the parent project stay automatic');
+}
+
 // Paths that resolve outside the project through .. or a symlink.
 const linkRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-policy-')));
 const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-outside-')));
@@ -347,4 +391,4 @@ try {
   fs.rmSync(outside, { recursive: true, force: true });
 }
 
-console.log(`Auto-approve passed: ${allowed.length + routineDev.length + gitListing.length + stillRoutine.length} commands approved, ${asked.length + inline.length + agentConfig.length + gitChanges.length + qaBypasses.length} still asked, inline code / symlink / agent config / branch-tag / QA bypass rules, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);
+console.log(`Auto-approve passed: ${allowed.length + routineDev.length + gitListing.length + stillRoutine.length + shouldFixRoutine.length} commands approved, ${asked.length + inline.length + agentConfig.length + gitChanges.length + qaBypasses.length + shouldFix.length} still asked, inline code / symlink / agent config / branch-tag / QA bypass / install / debugger / monitor folder rules, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);

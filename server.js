@@ -569,7 +569,10 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (!keyOk(req.headers['x-key'] || u.searchParams.get('key'))) return send(res, 401, { error: 'unauthorized' });
+  // Requests that change something take the key only from the x-key header: a key in a
+  // URL ends up in browser history, logs and screenshots.
+  const givenKey = req.headers['x-key'] || (req.method === 'GET' ? u.searchParams.get('key') : null);
+  if (!keyOk(givenKey)) return send(res, 401, { error: 'unauthorized' });
 
   if (req.method === 'GET' && url === '/state') {
     if (!closing) prune();

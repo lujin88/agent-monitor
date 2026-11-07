@@ -53,7 +53,7 @@ const DEV_COMMANDS = ['node', 'python', 'python3', 'pytest', 'tsc', 'eslint', 'p
   'cp', 'mv', 'sed', 'awk', 'make', 'deno', 'bun', 'swift', 'swiftc', 'ruby', 'go', 'cargo', 'xcodebuild'];
 const GIT_READ = new Set(['status', 'diff', 'log', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'shortlog', 'describe', 'tag', 'remote', 'config']);
 const GIT_DEV = new Set(['add', 'commit', 'switch', 'restore', 'stash', 'checkout', 'mv', 'worktree']);
-const NPM_DEV = new Set(['test', 't', 'run', 'run-script', 'start', 'exec', 'ls', 'list', 'outdated', 'view', 'pack', 'build']);
+const NPM_DEV = new Set(['test', 't', 'run', 'run-script', 'start', 'ls', 'list', 'outdated', 'view', 'pack', 'build']);
 
 // Things that are never approved automatically, wherever they appear in a command part.
 const NEVER = [/(^|\s)--force(-with-lease)?(\s|=|$)/]; // force flags are worth a look
@@ -117,7 +117,8 @@ function segments(cmd) {
 
 function inside(base, p) {
   const rel = path.relative(base, path.resolve(base, p));
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  // '..' or '../x' leaves; a name that merely starts with dots ('...', '..cache') does not.
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
 }
 // Paths inside .git can run code (hooks) or rewrite history: ask.
 function protectedPath(base, p) {
@@ -203,6 +204,8 @@ function inlineCode(argv, piped) {
     if (sub === 'eval' || sub === 'repl') return true;
     if (sub !== 'run') return false;
     script = args.slice(args.indexOf('run') + 1).find((a) => !a.startsWith('-') || a === '-') ?? null;
+  } else if (cmd === 'swift' || cmd === 'swiftc') {
+    script = args.find((a) => !a.startsWith('-') || a === '-') ?? null;
   } else return false;
   // `node -` or a pipe into an interpreter with no script file runs whatever arrives on stdin.
   return script === '-' || (piped && script === null);
@@ -305,6 +308,32 @@ function gitRestoreIndexOnly(rest) {
   return staged && !worktree;
 }
 
+// A debugger port lets whoever reaches it run code. Only loopback addresses.
+function inspectSafe(argv) {
+  if (!['node', 'bun', 'deno'].includes(argv[0])) return true;
+  const ok = (v) => /^\d+$/.test(v) || /^(127\.0\.0\.1|localhost):\d+$/i.test(v);
+  for (let i = 1; i < argv.length; i++) {
+    const m = /^--inspect(-brk|-wait|-port|-publish-uid)?(=(.*))?$/.exec(argv[i]);
+    if (!m) continue;
+    if (m[2] !== undefined) { if (m[1] !== '-publish-uid' && !ok(m[3])) return false; continue; }
+    if (m[1] === '-port') { if (!ok(argv[i + 1] || '')) return false; i++; }
+  }
+  return true;
+}
+
+// The Agent Monitor folder itself (this file, approve.js, token.txt, logs): reading the
+// token lets a script answer approvals; editing the rules changes what is approved.
+const MONITOR_DIR = realish(__dirname);
+function inMonitorDir(p) {
+  const r = realish(p);
+  return !!MONITOR_DIR && !!r && inside(MONITOR_DIR, r); // unresolvable: nothing to read there
+}
+// p contains the monitor folder (a recursive search from here would read it).
+function containsMonitorDir(p) {
+  const r = realish(p);
+  return !!MONITOR_DIR && !!r && inside(r, MONITOR_DIR);
+}
+
 function sedInPlaceOrExec(args) { return args.some((a) => /^-[a-zA-Z]*i/.test(a) || /^--in-place/.test(a)) ? 'dev' : 'read'; }
 
 // git branch / git tag in a listing form only: query options, and names only as
@@ -374,9 +403,41 @@ function commandKind(argv, base) {
     if (GIT_DEV.has(sub)) return 'dev';
     return null; // push, fetch, clone, reset, clean, rebase, merge, ...
   }
+  // Installs and remote code: only the listed subcommands run without asking.
+  if (cmd === 'bun') {
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (sub === undefined) return args.every((a) => ['--version', '-v', '--help', '-h'].includes(a)) ? 'read' : null;
+    return ['run', 'test', 'build'].includes(sub) ? 'dev' : null; // install, add, x, create, upgrade, ...
+  }
+  if (cmd === 'go') {
+    const at = args.findIndex((a) => !a.startsWith('-')), sub = args[at], rest = args.slice(at + 1);
+    if (['build', 'test', 'vet', 'fmt'].includes(sub)) return 'dev';
+    if (sub === 'version') return 'read';
+    if (sub === 'env') return rest.some((a) => /^-(w|u)$/.test(a)) ? null : 'read'; // go env -w writes global config
+    if (sub === 'run') {
+      // Only local files or packages; pkg@version downloads and runs remote code.
+      const targets = rest.filter((a) => !a.startsWith('-'));
+      return targets.length && targets.every((a) => !a.includes('@') && (/^\.\.?(\/|$)/.test(a) || a.startsWith('/') || a.endsWith('.go'))) ? 'dev' : null;
+    }
+    return null; // install, get, generate, mod, work, ...
+  }
+  if (cmd === 'cargo') {
+    const sub = args.find((a) => !a.startsWith('-') && !a.startsWith('+'));
+    if (sub === undefined) return args.every((a) => ['--version', '-V', '--help', '-h'].includes(a)) ? 'read' : null;
+    return ['build', 'test', 'check', 'run'].includes(sub) ? 'dev' : null; // install, add, publish, ...
+  }
+  if (cmd === 'deno') {
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (!['run', 'test', 'check', 'fmt', 'lint', 'task'].includes(sub)) return null; // install, add, compile, upgrade, ...
+    if (args.some((a) => /^(npm|jsr|https?):/i.test(a))) return null; // remote code
+    return 'dev';
+  }
+  if (cmd === 'make' && args.some((a) => /^(--eval(=|$)|-E)/.test(a))) return null; // --eval runs make code from the command line
   if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') {
     const sub = args.find((a) => !a.startsWith('-'));
     if (cmd === 'yarn' && sub === undefined) return null; // bare `yarn` installs
+    // npm exec can download and run any package; pnpm/yarn exec only run installed binaries.
+    if (sub === 'exec' && cmd !== 'npm') return 'dev';
     return NPM_DEV.has(sub) ? 'dev' : null; // install, ci, publish, add, update, ...
   }
   if (cmd === 'find') return args.some((a) => ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'].includes(a)) ? null : 'read';
@@ -491,6 +552,10 @@ function classifyShell(script, cwd) {
     const k = commandKind(argv, commandBase);
     if (!k) return { allow: false, reason: `${argv[0]} needs your decision` };
     if (inlineCode(argv, piped)) return { allow: false, reason: 'runs inline code' };
+    if (!inspectSafe(argv)) return { allow: false, reason: 'debugger open beyond this Mac' };
+    if (inMonitorDir(commandBase) || argv.slice(1).some((a) => !a.startsWith('-') && inMonitorDir(path.resolve(commandBase, a)))) {
+      return { allow: false, reason: 'Agent Monitor folder' };
+    }
     if (!pathsInside(argv, commandBase)) return { allow: false, reason: 'path outside the project' };
     if (k === 'dev') {
       // A development command may write any file it names, also as --flag=value.
@@ -569,8 +634,11 @@ function classify(p, env = process.env) {
     // Filesystem and shell permissions still require a bounded project folder.
     if (!cwd || cwd === '/' || cwd === path.resolve(require('os').homedir())) return { allow: false, reason: 'no project folder' };
 
+    if (inMonitorDir(cwd)) return { allow: false, reason: 'Agent Monitor folder' };
     if (READ_TOOLS.has(tool)) {
       const target = input.file_path || input.notebook_path || input.path;
+      const where = typeof target === 'string' ? path.resolve(cwd, target) : cwd;
+      if (inMonitorDir(where) || containsMonitorDir(where)) return { allow: false, reason: 'Agent Monitor folder' };
       if (typeof target === 'string' && !inside(cwd, target)) return { allow: false, reason: 'path outside the project' };
       return { allow: true, rule: 'read-only tool' };
     }
@@ -580,6 +648,7 @@ function classify(p, env = process.env) {
       if (!inside(cwd, target) || protectedPath(cwd, target)) return { allow: false, reason: 'path outside the project' };
       if (!realInside(cwd, target)) return { allow: false, reason: 'path outside the project' };
       if (agentConfigPath(cwd, target)) return { allow: false, reason: 'agent settings or hooks' };
+      if (inMonitorDir(path.resolve(cwd, target))) return { allow: false, reason: 'Agent Monitor folder' };
       return { allow: true, rule: 'edit inside project' };
     }
     if (SHELL_TOOLS.has(tool)) {
