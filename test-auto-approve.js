@@ -168,4 +168,49 @@ assert.equal(ask.log, '', 'nothing logged when asking');
 const question = runHook({ session_id: 's', cwd: P, tool_name: 'AskUserQuestion', tool_input: {} });
 assert.equal(question.printed, '', 'questions are never answered automatically');
 
+const gitRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'git-c-policy-')));
+const previewRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'preview-policy-')));
+try {
+  const command = 'npm install --prefix work/local-preview react react-dom esbuild --no-audit --no-fund';
+  const request = cmd => ({ cwd: previewRoot, tool_name: 'Bash', tool_input: { command: cmd } });
+  assert.equal(classify(request(command), env).allow, true);
+  assert.equal(runHook(request(command)).requests.length, 0);
+  assert.equal(classify(request(command), { AUTO_APPROVE: 'off' }).allow, false);
+  for (const cmd of [command + ' extra-package', command + ' --global', command + ' && npm publish',
+    command.replace('work/local-preview', '/tmp/preview'), command.replace('react-dom', 'unknown'),
+    'npm_config_registry=https://example.com ' + command, command + ' --registry=https://example.com',
+    command + ';', command + ' --force']) assert.equal(classify(request(cmd), env).allow, false, cmd);
+  fs.symlinkSync(path.dirname(previewRoot), path.join(previewRoot, 'work'));
+  assert.equal(classify(request(command), env).allow, false, 'outward symlink asks');
+  fs.unlinkSync(path.join(previewRoot, 'work'));
+  fs.symlinkSync(path.join(previewRoot, 'missing'), path.join(previewRoot, 'work'));
+  assert.equal(classify(request(command), env).allow, false, 'broken symlink asks');
+} finally { fs.rmSync(previewRoot, { recursive: true, force: true }); }
+try {
+  fs.mkdirSync(path.join(gitRoot, 'REPOS', 'harness-core'), { recursive: true });
+  fs.mkdirSync(path.join(gitRoot, 'repo with spaces'));
+  fs.symlinkSync(path.dirname(gitRoot), path.join(gitRoot, 'outside'));
+  const check = command => classify({ cwd: gitRoot, tool_name: 'Bash', tool_input: { command } }, env).allow;
+  for (const command of [
+    'git -C REPOS/harness-core pull --ff-only',
+    'git --no-pager -C REPOS/harness-core diff --stat',
+    'git -C REPOS -C harness-core status',
+    "git -C 'repo with spaces' status",
+    'git -C REPOS/harness-core ls-remote --heads origin main',
+    'git -C REPOS/harness-core status && ls REPOS',
+  ]) assert.equal(check(command), true, command);
+  for (const command of [
+    'git -C .. status', 'git -C outside status', 'git -C missing status',
+    'git -C REPOS/harness-core push', 'git -C REPOS/harness-core pull',
+    'git -C REPOS/harness-core reset --hard',
+    'git -C REPOS/harness-core -c core.sshCommand=evil pull --ff-only',
+    'git -C REPOS/harness-core status && git push',
+    'git -C REPOS/harness-core -C ../../.. status',
+    'git -C REPOS/harness-core/.git status', 'git -C', 'git -C --no-pager status',
+  ]) assert.equal(check(command), false, command);
+  const request = { cwd: gitRoot, tool_name: 'Bash', tool_input: { command: 'git -C REPOS/harness-core pull --ff-only' } };
+  assert.equal(runHook(request).requests.length, 0);
+  assert.equal(classify(request, { AUTO_APPROVE: 'off' }).allow, false);
+} finally { fs.rmSync(gitRoot, { recursive: true, force: true }); }
+
 console.log(`Auto-approve passed: ${allowed.length} commands approved, ${asked.length} still asked, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);
