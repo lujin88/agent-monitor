@@ -9,6 +9,10 @@
 // Also allowed: exact git pull --ff-only, and ls-remote queries to origin/upstream.
 // Pull updates local files and may run configured Git hooks; it is not read-only.
 // Also allowed: a project component.tgz sent to the official MagicPath archive endpoint.
+// Never auto-approved, even inside the project: interpreters running code given on the
+// command line or piped in (node -e, python -c, ...), writes that resolve outside the
+// project through .. or a symlink, and writes to agent permission files (.claude/,
+// .codex/, settings*.json, hooks.json). These go to the normal approval, not a denial.
 // Always asked: deleting, other network access, git push / history rewrites, sudo, installs,
 // writing outside the project, shell redirection or substitution, unknown MCP and web tools.
 // Known Chrome DevTools observation tools below may run without asking, but saving
@@ -91,21 +95,24 @@ function words(segment) {
   return out;
 }
 
-// Split on &&, ||, ; and | outside quotes.
+// Split on &&, ||, ; and | outside quotes. Each part is { text, piped }: piped means the
+// part reads the previous part's output on stdin (a single |).
 function segments(cmd) {
   const parts = [];
-  let cur = '', quote = null;
+  let cur = '', quote = null, piped = false;
+  const push = (next) => { parts.push({ text: cur.trim(), piped }); cur = ''; piped = next; };
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
     if (quote) { if (c === quote) quote = null; cur += c; continue; }
     if (c === "'" || c === '"') { quote = c; cur += c; continue; }
-    if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) { parts.push(cur); cur = ''; i++; continue; }
-    if (c === ';' || c === '|') { parts.push(cur); cur = ''; continue; }
+    if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) { push(false); i++; continue; }
+    if (c === ';') { push(false); continue; }
+    if (c === '|') { push(true); continue; }
     cur += c;
   }
   if (quote) return null;
-  parts.push(cur);
-  return parts.map((p) => p.trim()).filter(Boolean);
+  push(false);
+  return parts.filter((p) => p.text);
 }
 
 function inside(base, p) {
@@ -118,7 +125,119 @@ function protectedPath(base, p) {
   return rel[0] === '.git';
 }
 
+// Resolve symlinks in the longest existing part of an absolute path and append the rest
+// (path.resolve has already removed any ..). null when it cannot be resolved with
+// confidence: a broken symlink, a loop, or no permission to look.
+function realish(p) {
+  let head = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync(head), ...tail); } catch (err) {
+      // Too long or under a regular file: no such path can exist, so nothing to follow.
+      if (err.code === 'ENOENT') {
+        try { fs.lstatSync(head); return null; } catch (_) { /* really missing: look at the parent */ }
+      } else if (err.code !== 'ENAMETOOLONG' && err.code !== 'ENOTDIR') return null;
+      const parent = path.dirname(head);
+      if (parent === head) return null;
+      tail.unshift(path.basename(head));
+      head = parent;
+    }
+  }
+}
+// Inside the project after following symlinks, for paths that may be written.
+function realInside(root, p) {
+  const r = realish(root), t = realish(path.resolve(root, p));
+  return !!r && !!t && inside(r, t);
+}
+// Agent permission and hook files: changing them changes what runs without asking.
+// Checked as written and after symlinks; case-insensitive like the default macOS disk.
+const AGENT_CONFIG_DIRS = new Set(['.claude', '.codex']);
+function agentConfigName(full) {
+  const parts = full.toLowerCase().split(path.sep), name = parts[parts.length - 1];
+  return parts.some((x) => AGENT_CONFIG_DIRS.has(x)) || /^settings.*\.json$/.test(name) || name === 'hooks.json';
+}
+function agentConfigPath(base, p) {
+  const full = path.resolve(base, p), real = realish(full);
+  return agentConfigName(full) || (!!real && agentConfigName(real));
+}
+
+// Interpreters given code on the command line, or on stdin from a pipe, run code nobody
+// can review in a file. Running a script file stays a development command.
+// Options listed here take the next word as their value.
+const INTERPRETER_VALUE_OPTIONS = {
+  node: ['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--env-file',
+    '--input-type', '--watch-path', '--test-name-pattern', '--test-reporter', '--test-reporter-destination',
+    '--test-shard', '--disable-warning', '--redirect-warnings', '--title', '--inspect-port'],
+  bun: ['-r', '--preload', '--cwd', '--env-file', '--config', '-c'],
+};
+function inlineCode(argv, piped) {
+  const [cmd, ...args] = argv;
+  let script = null;
+  if (cmd === 'node' || cmd === 'bun') {
+    const takesValue = new Set(INTERPRETER_VALUE_OPTIONS[cmd]);
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === '--') { script = args[i + 1] ?? null; break; }
+      if (!a.startsWith('-') || a === '-') { script = a; break; }
+      if (/^-[a-z]*[ep][a-z]*$/.test(a) && a.length <= 3) return true; // -e -p -pe -ep
+      if (/^--(eval|print)(=|$)/.test(a)) return true;
+      if (takesValue.has(a)) i++;
+    }
+  } else if (cmd === 'python' || cmd === 'python3' || cmd === 'ruby') {
+    // Short options cluster (-Bc); after a value option the rest of the word is its value.
+    const code = cmd === 'ruby' ? 'e' : 'c', stop = cmd === 'ruby' ? '' : 'm';
+    const valueChars = cmd === 'ruby' ? 'rICEFTx0' : 'WX';
+    outer: for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === '--') { script = args[i + 1] ?? null; break; }
+      if (!a.startsWith('-') || a === '-') { script = a; break; }
+      if (a.startsWith('--')) continue;
+      for (let j = 1; j < a.length; j++) {
+        if (a[j] === code) return true;
+        if (stop && a[j] === stop) { script = 'module'; break outer; }
+        if (valueChars.includes(a[j])) { if (j === a.length - 1) i++; break; }
+      }
+    }
+  } else if (cmd === 'deno') {
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (sub === 'eval' || sub === 'repl') return true;
+    if (sub !== 'run') return false;
+    script = args.slice(args.indexOf('run') + 1).find((a) => !a.startsWith('-') || a === '-') ?? null;
+  } else return false;
+  // `node -` or a pipe into an interpreter with no script file runs whatever arrives on stdin.
+  return script === '-' || (piped && script === null);
+}
+
 function sedInPlaceOrExec(args) { return args.some((a) => /^-[a-zA-Z]*i/.test(a) || /^--in-place/.test(a)) ? 'dev' : 'read'; }
+
+// git branch / git tag in a listing form only: query options, and names only as
+// --list patterns or as the value of a query option such as --contains.
+const GIT_LIST_FLAGS = {
+  branch: new Set(['-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--show-current', '-l', '--list',
+    '-i', '--ignore-case', '--color', '--no-color', '--column', '--no-column', '--omit-empty']),
+  tag: new Set(['-l', '--list', '-n', '-i', '--ignore-case', '--color', '--no-color', '--column', '--no-column', '--omit-empty']),
+};
+const GIT_LIST_VALUE_FLAGS = new Set(['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format', '--abbrev']);
+function gitListOnly(sub, rest) {
+  const flags = GIT_LIST_FLAGS[sub];
+  const listing = rest.some((a) => a === '-l' || a === '--list' || (sub === 'branch' && /^-[arv]*l[arv]*$/.test(a)));
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--') return false;
+    if (flags.has(a)) continue;
+    if (sub === 'branch' && /^-[arvl]+$/.test(a)) continue; // -av, -vv, -ra
+    if (sub === 'tag' && /^-n\d+$/.test(a)) continue;
+    const name = a.split('=')[0];
+    if (GIT_LIST_VALUE_FLAGS.has(name)) {
+      // Value is optional for --contains/--merged; a following word is taken as the commit.
+      if (!a.includes('=') && rest[i + 1] !== undefined && !rest[i + 1].startsWith('-')) i++;
+      continue;
+    }
+    if (a.startsWith('-')) return false; // -d, -D, --delete, -m, --move, -c, --copy, -f, -u, -a (tag), ...
+    if (!listing) return false; // a name without --list creates a branch or tag
+  }
+  return true;
+}
 
 function commandKind(argv) {
   const [cmd, ...args] = argv;
@@ -141,8 +260,9 @@ function commandKind(argv) {
       if (!['origin', 'upstream'].includes(rest[i++])) return null;
       return rest.slice(i).every((ref) => /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(ref) && !ref.includes('..')) ? 'read' : null;
     }
-    if (sub === 'branch' && args.some((a) => /^-[a-zA-Z]*[dDmM]/.test(a))) return null; // delete/rename branches
-    if (sub === 'tag' && args.some((a) => /^-[a-zA-Z]*d/.test(a))) return null;
+    // branch and tag create, delete, rename and copy too, also with long options
+    // (--delete, --move, --copy, ...). Only listing forms are read-only; anything else asks.
+    if ((sub === 'branch' || sub === 'tag') && !gitListOnly(sub, rest)) return null;
     if (sub === 'remote' && args.some((a) => ['add', 'remove', 'rm', 'set-url', 'rename'].includes(a))) return null;
     if (sub === 'config' && !args.some((a) => ['--get', '--list', '-l', '--get-all'].includes(a))) return null;
     if (sub === 'checkout' && args.some((a) => a === '--' || a === '.')) return null; // discards local changes
@@ -228,7 +348,7 @@ function classifyShell(script, cwd) {
     return { allow: true, rule: 'local React preview dependencies (scripts allowed)' };
   }
   let base = cwd, kind = 'read';
-  for (const part of parts) {
+  for (const { text: part, piped } of parts) {
     if (NEVER.some((re) => re.test(part))) return { allow: false, reason: 'force flag' };
     const argv = words(part);
     if (!argv || !argv.length) return { allow: false, reason: 'variables, globs or escapes' };
@@ -259,7 +379,20 @@ function classifyShell(script, cwd) {
     }
     const k = commandKind(argv);
     if (!k) return { allow: false, reason: `${argv[0]} needs your decision` };
+    if (inlineCode(argv, piped)) return { allow: false, reason: 'runs inline code' };
     if (!pathsInside(argv, commandBase)) return { allow: false, reason: 'path outside the project' };
+    if (k === 'dev') {
+      // A development command may write any file it names, also as --flag=value.
+      // Follow symlinks and keep agent permission files out of reach.
+      if (!realInside(cwd, commandBase)) return { allow: false, reason: 'folder outside the project' };
+      for (const a of argv.slice(1)) {
+        const value = a.startsWith('-') ? (/^--?[^=]+=(.+)$/.exec(a) || [])[1] : a;
+        if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) continue;
+        if (a.startsWith('-') && !inside(commandBase, value)) return { allow: false, reason: 'path outside the project' };
+        if (!realInside(cwd, path.resolve(commandBase, value))) return { allow: false, reason: 'path outside the project' };
+        if (agentConfigPath(commandBase, value)) return { allow: false, reason: 'agent settings or hooks' };
+      }
+    }
     if (argv[0] === 'cd') base = path.resolve(base, argv[1] || base);
     if (k === 'dev') kind = 'dev';
   }
@@ -332,11 +465,13 @@ function classify(p, env = process.env) {
       const target = input.file_path || input.notebook_path;
       if (typeof target !== 'string' || !target) return { allow: false, reason: 'no file path' };
       if (!inside(cwd, target) || protectedPath(cwd, target)) return { allow: false, reason: 'path outside the project' };
+      if (!realInside(cwd, target)) return { allow: false, reason: 'path outside the project' };
+      if (agentConfigPath(cwd, target)) return { allow: false, reason: 'agent settings or hooks' };
       return { allow: true, rule: 'edit inside project' };
     }
     if (SHELL_TOOLS.has(tool)) {
       const workdir = typeof input.workdir === 'string' ? path.resolve(cwd, input.workdir) : cwd;
-      if (!inside(cwd, workdir)) return { allow: false, reason: 'path outside the project' };
+      if (!inside(cwd, workdir) || !realInside(cwd, workdir)) return { allow: false, reason: 'path outside the project' };
       // Local, destination-scoped reporting exception. Inspect original strings
       // only; shellScript's array conversion is not a security parser.
       const original = input.command ?? input.cmd;

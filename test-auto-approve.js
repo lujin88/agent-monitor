@@ -213,4 +213,106 @@ try {
   assert.equal(classify(request, { AUTO_APPROVE: 'off' }).allow, false);
 } finally { fs.rmSync(gitRoot, { recursive: true, force: true }); }
 
-console.log(`Auto-approve passed: ${allowed.length} commands approved, ${asked.length} still asked, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);
+
+// Tightened rules (agent-monitor security fix). Normal development commands still pass;
+// the requests below go to the normal approval instead of being approved automatically.
+const routineDev = [
+  'node script.js', 'node scripts/build.js --watch', 'node --test', 'node --check app.js', 'node script.js -e x -p 3000',
+  'node -r ./setup.js script.js', 'npm run build', 'npm test', 'python3 tool.py', 'python3 -m pytest -q',
+  'python -u tools/check.py --out dist/x.json', 'ruby script.rb', 'bun run build', 'bun test', 'deno run main.ts',
+  'deno test', 'make', 'make test', 'cat data.json | node scripts/parse.js', 'cat a.txt | python3 tool.py',
+  'git commit -m "Update settings handling"', 'cat .claude/settings.json', 'ls .codex',
+  'tsc --outDir=dist', 'cp a.js dist/a.js', 'git commit -m "' + 'long message '.repeat(30) + '"', 'node build.js --name=' + 'x'.repeat(300),
+];
+for (const c of routineDev) assert.equal(bash(c).allow, true, 'routine command must stay automatic: ' + c + ' (' + bash(c).reason + ')');
+const inline = [
+  'node -e "require(1)"', "node -e 'x'", 'node --eval x', 'node --eval=x', 'node -p 1+1', 'node --print 1', 'node -pe 1',
+  'node -r ./setup.js -e x', 'node --input-type module -e x', 'node -', 'echo x | node', 'cat a.js | node -',
+  'python -c "print(1)"', 'python3 -c x', 'python3 -Bc x', 'python3 -W ignore -c x', 'python3 -Wonce -c x',
+  'python3 -', 'echo x | python3', 'ruby -e x', 'ruby -ne x', 'ruby -rjson -e x', 'deno eval x', 'deno repl',
+  'echo x | deno run -', 'bun -e x', 'bun --eval x', 'bun -p 1', 'bun --print 1', 'ls && node -e x',
+  'git status; python3 -c x',
+];
+for (const c of inline) {
+  const r = bash(c);
+  assert.equal(r.allow, false, 'inline code should ask: ' + c);
+}
+assert.equal(bash('node -e x').reason, 'runs inline code');
+const agentConfig = [
+  'mkdir .claude', 'touch .claude/settings.json', 'cp x.json .claude/settings.local.json', 'sed -i "" s/a/b/ .codex/config.toml',
+  'cp a.json settings.json', 'cp a.json config/settings.dev.json', 'cp a.json hooks.json', 'mv a .CLAUDE/b',
+  'cd .claude && touch x', 'git add .claude/settings.json',
+];
+for (const c of agentConfig) assert.equal(bash(c).allow, false, 'agent config write should ask: ' + c);
+for (const f of ['.claude/settings.json', '.claude/settings.local.json', '.codex/config.toml', 'sub/.claude/agents/a.md',
+  'settings.json', 'app/settings.local.json', 'hooks.json', '.Claude/x']) {
+  assert.equal(tool('Write', { file_path: P + '/' + f }).allow, false, 'edit of agent config should ask: ' + f);
+  assert.equal(tool('Edit', { file_path: f }).allow, false, 'relative edit of agent config should ask: ' + f);
+}
+assert.equal(tool('Read', { file_path: P + '/.claude/settings.json' }).allow, true, 'reading settings stays automatic');
+assert.equal(tool('Write', { file_path: P + '/src/config.json' }).allow, true, 'other JSON stays automatic');
+// The case from the review: the agent's project folder is ~/.buzz, which contains .claude/settings.json.
+const buzzHome = '/Users/test/.buzz';
+assert.equal(tool('Edit', { file_path: buzzHome + '/.claude/settings.json' }, buzzHome).allow, false);
+assert.equal(classify({ tool_name: 'Bash', cwd: buzzHome, tool_input: { command: 'cp x .claude/settings.json' } }, env).allow, false);
+// External feedback (GitHub): long-form delete/rename options slipped past the short-flag
+// guard and were approved as read-only. Only listing forms of branch/tag stay automatic.
+const gitListing = ['git branch', 'git branch -a', 'git branch -r', 'git branch -v', 'git branch -vv', 'git branch -av',
+  'git branch --show-current', 'git branch --list', 'git branch --list "feat/*"', 'git branch -l', 'git branch --all',
+  'git branch --contains HEAD', 'git branch --merged main', 'git branch --no-merged', 'git --no-pager branch -a',
+  'git tag', 'git tag -l', 'git tag --list "v1.*"', 'git tag -n5', 'git tag --contains HEAD', 'git tag --points-at HEAD'];
+for (const c of gitListing) assert.equal(bash(c).allow, true, 'listing stays automatic: ' + c + ' (' + bash(c).reason + ')');
+const gitChanges = ['git branch --delete x', 'git branch --delete --force x', 'git branch --move a b', 'git branch --move b',
+  'git branch --copy a b', 'git branch --copy b', 'git branch -d x', 'git branch -D x', 'git branch -m a b', 'git branch -M a b',
+  'git branch -c a b', 'git branch -C a b', 'git branch -f x HEAD', 'git branch --force x HEAD', 'git branch new-name',
+  'git branch new-name main', 'git branch -u origin/x', 'git branch --set-upstream-to=origin/x', 'git branch --unset-upstream',
+  'git branch --edit-description', 'git branch -l -d x', 'git branch --list x --delete', 'git branch -- x',
+  'git tag --delete v1', 'git tag -d v1', 'git tag v2', 'git tag v2 HEAD', 'git tag -a v2 -m x', 'git tag --annotate v2',
+  'git tag -f v1', 'git tag --force v1', 'git tag -s v2', 'git --no-pager tag --delete v1'];
+for (const c of gitChanges) assert.equal(bash(c).allow, false, 'branch/tag change should ask: ' + c);
+
+// Paths that resolve outside the project through .. or a symlink.
+const linkRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-policy-')));
+const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-outside-')));
+try {
+  const proj = path.join(linkRoot, 'proj');
+  fs.mkdirSync(path.join(proj, 'src'), { recursive: true });
+  fs.symlinkSync(outside, path.join(proj, 'out'));
+  fs.symlinkSync(path.join(outside, 'file.txt'), path.join(proj, 'outfile'));
+  fs.symlinkSync(path.join(linkRoot, 'missing'), path.join(proj, 'broken'));
+  fs.mkdirSync(path.join(linkRoot, 'cfg'));
+  fs.symlinkSync(path.join(proj, 'src'), path.join(proj, 'inner'));
+  const sh = (command) => classify({ tool_name: 'Bash', cwd: proj, tool_input: { command } }, env);
+  const ed = (file_path) => classify({ tool_name: 'Write', cwd: proj, tool_input: { file_path } }, env);
+  for (const c of ['touch out/x', 'cp a.js out/a.js', 'cp a.js outfile', 'mkdir -p out/new/deeper', 'sed -i "" s/a/b/ outfile',
+    'cd out && touch x', 'cd src && cp a.js ../../x', 'touch src/../../x', 'touch broken', 'tsc --outDir=out',
+    'tsc --outDir=../elsewhere', 'node build.js --out=out/x.js']) {
+    assert.equal(sh(c).allow, false, 'write through .. or symlink should ask: ' + c);
+  }
+  for (const f of ['out/x.js', 'outfile', 'out/new/dir/x.js', 'broken', 'src/../../x.js']) {
+    assert.equal(ed(path.join(proj, f)).allow, false, 'edit through symlink should ask: ' + f);
+  }
+  for (const c of ['touch src/x', 'cp a.js inner/a.js', 'mkdir -p src/new/deeper', 'cd inner && touch x', 'ls out', 'cat outfile']) {
+    assert.equal(sh(c).allow, true, 'inside the project should stay automatic: ' + c + ' (' + sh(c).reason + ')');
+  }
+  assert.equal(ed(path.join(proj, 'inner/x.js')).allow, true, 'symlink that stays inside is fine');
+  assert.equal(classify({ tool_name: 'exec_command', cwd: proj, tool_input: { cmd: 'touch x', workdir: 'out' } }, env).allow, false,
+    'Codex workdir through a symlink should ask');
+  // A symlink named innocently that points at an agent config folder.
+  fs.mkdirSync(path.join(proj, '.claude'));
+  fs.symlinkSync(path.join(proj, '.claude'), path.join(proj, 'cfg'));
+  assert.equal(sh('touch cfg/x').allow, false, 'symlink to .claude should ask');
+  assert.equal(ed(path.join(proj, 'cfg/x')).allow, false, 'edit via symlink to .claude should ask');
+  // Blocked requests go to the normal approval: the hook asks instead of denying.
+  for (const command of ['node -e x', 'touch out/x', 'cp a .claude/settings.json']) {
+    const req = { session_id: 's', cwd: proj, tool_name: 'Bash', tool_input: { command } };
+    assert.equal(classify(req, env).allow, false);
+    const hook = runHook(req);
+    assert.equal(hook.requests.length, 1, 'goes to the dashboard for a decision: ' + command);
+  }
+} finally {
+  fs.rmSync(linkRoot, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+}
+
+console.log(`Auto-approve passed: ${allowed.length + routineDev.length + gitListing.length} commands approved, ${asked.length + inline.length + agentConfig.length + gitChanges.length} still asked, inline code / symlink / agent config / branch-tag rules, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);
