@@ -94,31 +94,86 @@ assert.deepEqual(dk.replaced, ['/?tab=need#x'], 'key removed, other parts of the
 dk = dashboardKey('http://localhost:7777/', 'saved');
 assert.equal(dk.key, 'saved'); assert.deepEqual(dk.replaced, [], 'nothing to remove without ?key=');
 
-// 4. Server: loopback only, no key in the startup output, writes need the x-key header.
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hardening-server-')), port = 19900 + Math.floor(Math.random() * 90), key = 'hardening-key-31337';
-for (const f of ['server.js', 'approve.js', 'codex-watch.js', 'chat-watch.js', 'cursor-usage.js', 'claude-usage.js', 'grok-usage.js', 'grok-watch.js']) fs.copyFileSync(path.join(__dirname, f), path.join(dir, f));
-fs.writeFileSync(path.join(dir, 'token.txt'), key);
-let output = '';
-const child = spawn(process.execPath, [path.join(dir, 'server.js')], { env: { ...process.env, HOME: dir, PORT: String(port), CHAT_WATCH: 'off', CODEX_WATCH: 'off', CODEX_USAGE: 'off', CURSOR_USAGE: 'off', GROK_WATCH: 'off', GROK_USAGE: 'off', CLAUDE_USAGE: 'off', MONITOR_NOTIFICATIONS: 'off' }, stdio: ['ignore', 'pipe', 'pipe'] });
-child.stdout.on('data', (d) => { output += d; }); child.stderr.on('data', (d) => { output += d; });
+// 4. Server: LAN by default (MONITOR_HOST=127.0.0.1 keeps it on this Mac), no key in output
+// or LAN responses, writes need x-key, Host allowlist, no CORS, hooks stay loopback-only.
+const http = require('http');
+const key = 'hardening-key-31337';
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
-const get = (host, route, headers = {}) => fetch(`http://${host}:${port}${route}`, { headers, signal: AbortSignal.timeout(2000) });
+function startServer(extraEnv) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hardening-server-')), port = 19000 + Math.floor(Math.random() * 900);
+  for (const f of ['server.js', 'approve.js', 'codex-watch.js', 'chat-watch.js', 'cursor-usage.js', 'claude-usage.js', 'grok-usage.js', 'grok-watch.js', 'index.html', 'vendor-qrcode.js']) fs.copyFileSync(path.join(__dirname, f), path.join(dir, f));
+  fs.writeFileSync(path.join(dir, 'token.txt'), key);
+  const s = { dir, port, output: '' };
+  s.child = spawn(process.execPath, [path.join(dir, 'server.js')], { env: { ...process.env, HOME: dir, PORT: String(port), CHAT_WATCH: 'off', CODEX_WATCH: 'off', CODEX_USAGE: 'off', CURSOR_USAGE: 'off', GROK_WATCH: 'off', GROK_USAGE: 'off', CLAUDE_USAGE: 'off', MONITOR_NOTIFICATIONS: 'off', ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+  s.child.stdout.on('data', (d) => { s.output += d; }); s.child.stderr.on('data', (d) => { s.output += d; });
+  s.stop = async () => { s.child.kill('SIGTERM'); await pause(300); fs.rmSync(dir, { recursive: true, force: true }); };
+  return s;
+}
+// Raw request so the Host header can be set (fetch does not allow it).
+function req(s, address, route, { method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: address.replace(/^\[|\]$/g, ''), port: s.port, path: route, method, headers: { host: `${address}:${s.port}`, ...headers }, timeout: 2000 }, (res) => {
+      let data = ''; res.on('data', (c) => { data += c; }); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+    });
+    r.on('timeout', () => r.destroy(new Error('timeout'))); r.on('error', reject);
+    r.end(body);
+  });
+}
+const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal);
 (async () => {
+  const main = startServer({}), localOnly = startServer({ MONITOR_HOST: '127.0.0.1' });
   try {
-    for (let i = 0; i < 80 && !output.includes('running'); i++) await pause(25);
-    assert.equal((await get('127.0.0.1', '/state', { 'x-key': key })).status, 200);
-    assert.equal((await get('[::1]', '/state', { 'x-key': key })).status, 200, 'IPv6 loopback answers (macOS localhost)');
-    assert.equal((await get('localhost', '/state', { 'x-key': key })).status, 200);
-    assert.equal((await get('127.0.0.1', '/state?key=' + key)).status, 200, 'GET still accepts ?key= (first visit)');
-    const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal);
-    if (lan) await assert.rejects(get(lan.address, '/state', { 'x-key': key }), 'not reachable from the network');
-    else console.log('SKIP: no non-loopback IPv4 interface, the "not reachable from the network" check did not run.');
-    const post = (route, headers) => fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ aid: '0000000000000000', decision: 'deny' }) });
-    assert.equal((await post('/decide?key=' + key, {})).status, 401, 'POST ignores ?key=');
-    assert.notEqual((await post('/decide', { 'x-key': key })).status, 401, 'POST with x-key is authorised');
-    assert(!output.includes(key), 'startup output never contains the key');
-    assert(!/On your iPad/.test(output));
-    console.log('Security hardening passed: loopback only (127.0.0.1, ::1, localhost), key not printed, POST needs x-key, ?key= removed from the address bar, MONITOR_URL limited to this Mac, Edit/Write content on the approval card.');
+    for (let i = 0; i < 120 && !(main.output.includes('running') && localOnly.output.includes('running')); i++) await pause(25);
+    const k = { 'x-key': key };
+    for (const s of [main, localOnly]) {
+      assert.equal((await req(s, '127.0.0.1', '/state', { headers: k })).status, 200);
+      assert.equal((await req(s, '[::1]', '/state', { headers: k })).status, 200, 'IPv6 loopback answers (macOS localhost)');
+      assert.equal((await req(s, 'localhost', '/state', { headers: k })).status, 200);
+      assert(!s.output.includes(key), 'startup output never contains the key');
+      assert(!/On your iPad/.test(s.output));
+    }
+    assert.equal(JSON.parse((await req(main, '127.0.0.1', '/state', { headers: k })).body).local, true, 'this Mac is local');
+    // Writes take the key only from x-key.
+    const decideBody = JSON.stringify({ aid: '0000000000000000', decision: 'deny' }), json = { 'content-type': 'application/json' };
+    assert.equal((await req(main, '127.0.0.1', '/decide?key=' + key, { method: 'POST', headers: json, body: decideBody })).status, 401, 'POST ignores ?key=');
+    assert.notEqual((await req(main, '127.0.0.1', '/decide', { method: 'POST', headers: { ...json, ...k }, body: decideBody })).status, 401, 'POST with x-key is authorised');
+    // DNS rebinding: unknown host names are refused, IPs / localhost / *.local are served.
+    for (const host of ['evil.example', 'attacker.com', '127.0.0.1.nip.io']) {
+      const r = await new Promise((resolve, reject) => { const q = http.request({ host: '127.0.0.1', port: main.port, path: '/', headers: { host: host + ':' + main.port }, timeout: 2000 }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }); q.on('error', reject); q.end(); });
+      assert.equal(r, 421, 'Host ' + host + ' is refused');
+    }
+    assert.equal((await new Promise((resolve, reject) => { const q = http.request({ host: '127.0.0.1', port: main.port, path: '/state', headers: { host: 'lus-mac.local:' + main.port, ...k }, timeout: 2000 }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }); q.on('error', reject); q.end(); })), 200, '*.local is accepted');
+    // A local proxy (tailscale serve and the like) is not "this Mac".
+    for (const h of [{ 'x-forwarded-for': '100.64.0.2' }, { forwarded: 'for=100.64.0.2' }, { 'tailscale-user-login': 'x@y' }]) {
+      assert.equal((await req(main, '127.0.0.1', '/lan-addresses', { headers: { ...k, ...h } })).status, 403, 'forwarded request is not local: ' + Object.keys(h)[0]);
+      assert.equal((await req(main, '127.0.0.1', '/event', { method: 'POST', headers: { ...json, ...k, ...h }, body: '{"source":"codex","session":"x","status":"running"}' })).status, 403, 'hooks refuse forwarded requests');
+      assert.equal(JSON.parse((await req(main, '127.0.0.1', '/state', { headers: { ...k, ...h } })).body).local, false);
+    }
+    const addrs = JSON.parse((await req(main, '127.0.0.1', '/lan-addresses', { headers: k })).body);
+    assert.equal(addrs.localOnly, false); assert(!JSON.stringify(addrs).includes(key), 'the address list never carries the key');
+    assert.equal(JSON.parse((await req(localOnly, '127.0.0.1', '/lan-addresses', { headers: k })).body).localOnly, true);
+    // No CORS: another web page can neither read responses nor send x-key across origins.
+    for (const r of [await req(main, '127.0.0.1', '/state', { headers: { ...k, origin: 'http://evil.example' } }),
+      await req(main, '127.0.0.1', '/decide', { method: 'OPTIONS', headers: { origin: 'http://evil.example', 'access-control-request-method': 'POST', 'access-control-request-headers': 'x-key' } })]) {
+      assert(!Object.keys(r.headers).some((h) => h.startsWith('access-control-')), 'no Access-Control-* headers');
+    }
+    assert(!/Access-Control-Allow/i.test(fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8')), 'server.js never sets CORS headers');
+    if (lan) {
+      // Default: an iPad on the same network reaches the dashboard...
+      assert.equal((await req(main, lan.address, '/state', { headers: k })).status, 200, 'LAN reaches the dashboard by default');
+      const page = await req(main, lan.address, '/'), st = await req(main, lan.address, '/state', { headers: k }), noKey = await req(main, lan.address, '/state');
+      for (const r of [page, st, noKey]) assert(!r.body.includes(key), 'no LAN response contains the key');
+      assert.equal(noKey.status, 401);
+      assert.equal(JSON.parse(st.body).local, false, 'a LAN device is not local (no QR button)');
+      // ...but never the hook endpoints, the address list or chat-tracking setup.
+      assert.equal((await req(main, lan.address, '/lan-addresses', { headers: k })).status, 403);
+      for (const route of ['/event', '/ask', '/ack', '/usage', '/chat-tracking/setup']) {
+        assert.equal((await req(main, lan.address, route, { method: 'POST', headers: { ...json, ...k }, body: '{}' })).status, 403, route + ' is local only');
+      }
+      // MONITOR_HOST=127.0.0.1: not reachable from the network.
+      await assert.rejects(req(localOnly, lan.address, '/state', { headers: k }), 'MONITOR_HOST=127.0.0.1 is not reachable from the network');
+    } else console.log('SKIP: no non-loopback IPv4 interface; the LAN reachability checks did not run.');
+    console.log('Security hardening passed: LAN by default and MONITOR_HOST=127.0.0.1 local only, key never printed or sent to the LAN, POST needs x-key, Host allowlist, no CORS, forwarded requests are not local, hooks local only, ?key= removed from the address bar, MONITOR_URL limited to this Mac, Edit/Write content on the approval card.');
   } catch (err) { console.error(err); process.exitCode = 1; }
-  finally { child.kill('SIGTERM'); await pause(300); fs.rmSync(dir, { recursive: true, force: true }); }
+  finally { await main.stop(); await localOnly.stop(); }
 })();
