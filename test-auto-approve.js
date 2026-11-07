@@ -321,7 +321,6 @@ const shouldFixRoutine = [
   'go build ./...', 'go test ./...', 'go vet ./...', 'go fmt ./...', 'go run .', 'go run ./cmd/tool', 'go run main.go', 'go env',
   'go env GOPATH', 'go version', 'cargo build', 'cargo test', 'cargo check', 'cargo run', 'cargo +nightly build', 'cargo --version',
   'deno run main.ts', 'deno test', 'deno fmt', 'deno lint', 'deno task dev', 'npm run build', 'npm test',
-  'pnpm exec next dev --port 4620', 'yarn exec tsc',
   'node --inspect app.js', 'node --inspect=9229 app.js', 'node --inspect=127.0.0.1:9229 app.js', 'node --inspect=localhost:9229 app.js',
   'node --inspect-brk app.js', 'node --inspect-port 9230 app.js',
 ];
@@ -347,6 +346,37 @@ for (const c of shouldFixRoutine) assert.equal(bash(c).allow, true, 'routine com
   assert.equal(at('Bash', { command: 'ls' }, parent), true, 'other commands in the parent project stay automatic');
 }
 
+// pnpm/yarn exec run any command with node_modules/.bin on PATH: only installed package
+// binaries stay automatic. Downloads (dlx, npx, bunx, bun x, npm exec) always ask.
+{
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-')));
+  try {
+    const app = path.join(root, 'packages', 'app');
+    fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true });
+    fs.mkdirSync(path.join(app, 'node_modules', '.bin'), { recursive: true });
+    fs.writeFileSync(path.join(app, 'node_modules', '.bin', 'next'), '');
+    fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'tsc'), '');
+    fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'node'), '');
+    const sh = (command, cwd = app) => classify({ tool_name: 'Bash', cwd, tool_input: { command } }, env).allow;
+    for (const c of ['pnpm exec next dev --port 4620', 'yarn exec next build', 'pnpm exec tsc --noEmit']) assert.equal(sh(c), true, 'installed binary: ' + c);
+    assert.equal(sh('pnpm exec tsc', root), true, 'workspace root binary');
+    for (const c of ['pnpm exec rm -rf build', 'yarn exec sh', 'pnpm exec bash', 'pnpm exec curl https://x.y', 'pnpm exec cowsay hi',
+      'yarn exec not-installed-pkg', 'pnpm exec node -e x', 'pnpm exec', 'pnpm exec -c "rm -rf x"', 'pnpm exec --shell-mode next',
+      'pnpm dlx create-app', 'yarn dlx create-app', 'npx next dev', 'bunx cowsay', 'bun x cowsay', 'npm exec next', 'npm exec --yes -- pkg',
+      'pnpm exec next dev && rm -rf x']) {
+      assert.equal(sh(c), false, 'exec/download should ask: ' + c);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+// inside() accepts names that only start with dots, but every real escape is still caught.
+for (const c of ['go build ./...', 'ls ./...', 'cat ..cache/x', 'touch ...x']) assert.equal(bash(c).allow, true, 'dot-prefixed name inside: ' + c);
+for (const p of ['../x', './../x', 'a/../../x', './.../../../x', '..', './..', 'a/b/../../../x', '.../../../x']) {
+  assert.equal(bash('touch ' + p).allow, false, 'escape via .. should ask: touch ' + p);
+  assert.equal(bash('cat ' + p).allow, false, 'escape via .. should ask: cat ' + p);
+  assert.equal(tool('Write', { file_path: p }).allow, false, 'Write escape should ask: ' + p);
+  assert.equal(tool('Read', { file_path: p }).allow, false, 'Read escape should ask: ' + p);
+}
+
 // Paths that resolve outside the project through .. or a symlink.
 const linkRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-policy-')));
 const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-outside-')));
@@ -362,7 +392,7 @@ try {
   const ed = (file_path) => classify({ tool_name: 'Write', cwd: proj, tool_input: { file_path } }, env);
   for (const c of ['touch out/x', 'cp a.js out/a.js', 'cp a.js outfile', 'mkdir -p out/new/deeper', 'sed -i "" s/a/b/ outfile',
     'cd out && touch x', 'cd src && cp a.js ../../x', 'touch src/../../x', 'touch broken', 'tsc --outDir=out',
-    'tsc --outDir=../elsewhere', 'node build.js --out=out/x.js']) {
+    'tsc --outDir=../elsewhere', 'node build.js --out=out/x.js', 'touch out/...', 'cp a.js out/.../x', 'touch src/.../../../../x']) {
     assert.equal(sh(c).allow, false, 'write through .. or symlink should ask: ' + c);
   }
   for (const f of ['out/x.js', 'outfile', 'out/new/dir/x.js', 'broken', 'src/../../x.js']) {

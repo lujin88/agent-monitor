@@ -365,6 +365,22 @@ function gitListOnly(sub, rest) {
   return true;
 }
 
+// pnpm/yarn exec <bin>: <bin> must be an installed package binary in node_modules/.bin of
+// this folder or a parent (workspaces), never a system program like rm or sh.
+function installedBin(args, base) {
+  const at = args.indexOf('exec');
+  const rest = args.slice(at + 1);
+  if (!rest.length || rest[0].startsWith('-') || !/^[A-Za-z0-9@][A-Za-z0-9._@-]*$/.test(rest[0])) return false;
+  if (/^(node|nodejs|bun|deno|python3?|ruby|perl|swift|sh|bash|zsh|env)$/.test(rest[0])) return false; // interpreters/shells
+  for (let dir = path.resolve(base || '/'), i = 0; i < 8; i++) {
+    try { if (fs.statSync(path.join(dir, 'node_modules', '.bin', rest[0])).isFile()) return true; } catch (_) {}
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return false;
+}
+
 function commandKind(argv, base) {
   const [cmd, ...args] = argv;
   if (cmd === 'git') {
@@ -436,8 +452,9 @@ function commandKind(argv, base) {
   if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') {
     const sub = args.find((a) => !a.startsWith('-'));
     if (cmd === 'yarn' && sub === undefined) return null; // bare `yarn` installs
-    // npm exec can download and run any package; pnpm/yarn exec only run installed binaries.
-    if (sub === 'exec' && cmd !== 'npm') return 'dev';
+    // npm exec can download and run any package. pnpm/yarn exec run ANY command with
+    // node_modules/.bin on PATH, so only a program installed there (no options) is automatic.
+    if (sub === 'exec' && cmd !== 'npm') return installedBin(args, base) ? 'dev' : null;
     return NPM_DEV.has(sub) ? 'dev' : null; // install, ci, publish, add, update, ...
   }
   if (cmd === 'find') return args.some((a) => ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'].includes(a)) ? null : 'read';
