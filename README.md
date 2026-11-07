@@ -27,9 +27,26 @@ node server.js
 
 需要 Node 16 以上（`node -v` 检查）。终端只打印 `http://localhost:7777/`，**不打印访问密钥**（日志会留在磁盘上）。在 Mac 上第一次打开时，在地址后面加 `?key=<token.txt 里的内容>`，密钥会被记住，地址栏里的 key 随即被去掉。
 
-**iPad 怎么打开**：在 Mac 上打开看板，点右上角的二维码按钮（Open on iPad or phone），再点 Show code，用 iPad 相机扫一下。iPad 和 Mac 要在同一个 Wi-Fi。二维码里带着密钥，别拍照、别分享。**只在家里或可信 Wi-Fi 下用 iPad 审批。**
+**iPad 怎么打开**：默认只有这台 Mac 能打开看板。要在 iPad 上审批，先按下面「监听地址」打开局域网，然后在 Mac 上打开看板，点右上角的二维码按钮（Open on iPad or phone），再点 Show code，用 iPad 相机扫一下。iPad 和 Mac 要在同一个 Wi-Fi。二维码里带着密钥，别拍照、别分享。**只在家里或可信 Wi-Fi 下用 iPad 审批。**
 
-**监听地址**：默认监听所有 IPv4 地址加 `::1`，同一个 Wi-Fi 里的 iPad 能连上。只想给本机用，就设 `MONITOR_HOST=127.0.0.1`（用 LaunchAgent 跑的话，写在 plist 的 `EnvironmentVariables` 里，改完要重新加载这个 LaunchAgent）。不管怎么设，hook 上报（`/event`、`/ask`、`/ack`、`/usage`）和 `/chat-tracking/setup` 都只接受本机请求；带 `X-Forwarded-For` / `Forwarded` / `Tailscale-*` 头的请求不算本机。看板只接受用 IP、`localhost` 或 `*.local` 访问（防 DNS rebinding），也不发任何 CORS 头。
+**监听地址**：默认只监听本机（`127.0.0.1` 和 `::1`）。要让同一个 Wi-Fi 里的 iPad 连上，设 `MONITOR_HOST=0.0.0.0`。用 LaunchAgent 跑的话，在 plist 里加：
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+  <key>MONITOR_HOST</key>
+  <string>0.0.0.0</string>
+</dict>
+```
+
+（plist 里已经有 `EnvironmentVariables` 的话，只在里面加 `MONITOR_HOST` 这一对。）改完要重新加载，光 `launchctl kickstart -k` 不会重新读 plist：
+
+```sh
+launchctl bootout gui/$(id -u)/<你的 LaunchAgent label>
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<你的 LaunchAgent label>.plist
+```
+
+不管怎么设，hook 上报（`/event`、`/ask`、`/ack`、`/usage`）和 `/chat-tracking/setup` 都只接受本机请求；带 `X-Forwarded-For` / `Forwarded` / `Tailscale-*` 头的请求不算本机。看板只接受用 IP、`localhost` 或 `*.local` 访问（防 DNS rebinding），也不发任何 CORS 头。
 
 密钥也保存在 `~/agent-monitor/token.txt`。因为它能批准命令，不要发给别人，也不要截图外传。
 
@@ -291,7 +308,7 @@ POST http://localhost:7777/event      请求头 x-key: <密钥>
 ## 已知限制
 
 - 密钥能批准命令，保管好。它保存在 `token.txt`（权限 600，16 字节随机数的十六进制），想换就删掉这个文件再重启服务，浏览器需要用新密钥重新打开一次。
-- 局域网这条路是 http，没有加密。同一个 Wi-Fi 里能抓包的人可以看到密钥。只在家里或可信 Wi-Fi 下用 iPad 审批；在咖啡馆、酒店这类公共网络，请设 `MONITOR_HOST=127.0.0.1`。
+- 局域网这条路（`MONITOR_HOST=0.0.0.0`）是 http，没有加密。同一个 Wi-Fi 里能抓包的人可以看到密钥和审批内容。只在家里或可信 Wi-Fi 下打开；在咖啡馆、酒店这类公共网络，去掉这个设置。
 - Mac 休眠时服务会停，iPad 上会显示「连不上 Mac」，批准也会自动退回 Mac。
 - 「运行中」的任务如果被你手动打断，Claude Code 不会发 Stop；30 分钟没有活动后显示 **Status unknown**（不会当作完成），点 Dismiss 即可移除记录。
 - 任务太多时，各区按实际高度分页（区块标题右侧的翻页按钮），同一 App 的任务始终在同一张卡片里，不截断文字。

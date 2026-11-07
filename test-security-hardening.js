@@ -94,7 +94,7 @@ assert.deepEqual(dk.replaced, ['/?tab=need#x'], 'key removed, other parts of the
 dk = dashboardKey('http://localhost:7777/', 'saved');
 assert.equal(dk.key, 'saved'); assert.deepEqual(dk.replaced, [], 'nothing to remove without ?key=');
 
-// 4. Server: LAN by default (MONITOR_HOST=127.0.0.1 keeps it on this Mac), no key in output
+// 4. Server: this Mac only by default (MONITOR_HOST=0.0.0.0 opens the LAN), no key in output
 // or LAN responses, writes need x-key, Host allowlist, no CORS, hooks stay loopback-only.
 const http = require('http');
 const key = 'hardening-key-31337';
@@ -121,7 +121,7 @@ function req(s, address, route, { method = 'GET', headers = {}, body } = {}) {
 }
 const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal);
 (async () => {
-  const main = startServer({}), localOnly = startServer({ MONITOR_HOST: '127.0.0.1' });
+  const main = startServer({ MONITOR_HOST: '0.0.0.0' }), localOnly = startServer({});
   try {
     for (let i = 0; i < 120 && !(main.output.includes('running') && localOnly.output.includes('running')); i++) await pause(25);
     const k = { 'x-key': key };
@@ -159,8 +159,8 @@ const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.fami
     }
     assert(!/Access-Control-Allow/i.test(fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8')), 'server.js never sets CORS headers');
     if (lan) {
-      // Default: an iPad on the same network reaches the dashboard...
-      assert.equal((await req(main, lan.address, '/state', { headers: k })).status, 200, 'LAN reaches the dashboard by default');
+      // MONITOR_HOST=0.0.0.0: an iPad on the same network reaches the dashboard...
+      assert.equal((await req(main, lan.address, '/state', { headers: k })).status, 200, 'LAN reaches the dashboard with MONITOR_HOST=0.0.0.0');
       const page = await req(main, lan.address, '/'), st = await req(main, lan.address, '/state', { headers: k }), noKey = await req(main, lan.address, '/state');
       for (const r of [page, st, noKey]) assert(!r.body.includes(key), 'no LAN response contains the key');
       assert.equal(noKey.status, 401);
@@ -170,10 +170,10 @@ const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.fami
       for (const route of ['/event', '/ask', '/ack', '/usage', '/chat-tracking/setup']) {
         assert.equal((await req(main, lan.address, route, { method: 'POST', headers: { ...json, ...k }, body: '{}' })).status, 403, route + ' is local only');
       }
-      // MONITOR_HOST=127.0.0.1: not reachable from the network.
-      await assert.rejects(req(localOnly, lan.address, '/state', { headers: k }), 'MONITOR_HOST=127.0.0.1 is not reachable from the network');
+      // Default (no MONITOR_HOST): not reachable from the network.
+      await assert.rejects(req(localOnly, lan.address, '/state', { headers: k }), 'by default the dashboard is not reachable from the network');
     } else console.log('SKIP: no non-loopback IPv4 interface; the LAN reachability checks did not run.');
-    console.log('Security hardening passed: LAN by default and MONITOR_HOST=127.0.0.1 local only, key never printed or sent to the LAN, POST needs x-key, Host allowlist, no CORS, forwarded requests are not local, hooks local only, ?key= removed from the address bar, MONITOR_URL limited to this Mac, Edit/Write content on the approval card.');
+    console.log('Security hardening passed: this Mac only by default and LAN with MONITOR_HOST=0.0.0.0, key never printed or sent to the LAN, POST needs x-key, Host allowlist, no CORS, forwarded requests are not local, hooks local only, ?key= removed from the address bar, MONITOR_URL limited to this Mac, Edit/Write content on the approval card.');
   } catch (err) { console.error(err); process.exitCode = 1; }
   finally { await main.stop(); await localOnly.stop(); }
 })();

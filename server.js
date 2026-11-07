@@ -16,10 +16,10 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const PORT = Number(process.env.PORT) || 7777;
-// Where the dashboard listens. Default: every IPv4 address, so an iPad on the same Wi-Fi can
-// open it (plus ::1, because macOS resolves localhost to IPv6 first). MONITOR_HOST=127.0.0.1
-// keeps it on this Mac only. Hook endpoints stay loopback-only either way.
-const LISTEN_HOST = process.env.MONITOR_HOST || '0.0.0.0';
+// Where the dashboard listens. Default: this Mac only (127.0.0.1, plus ::1 because macOS
+// resolves localhost to IPv6 first). MONITOR_HOST=0.0.0.0 opens it to devices on the same
+// network, for approving from an iPad at home. Hook endpoints stay loopback-only either way.
+const LISTEN_HOST = process.env.MONITOR_HOST || '127.0.0.1';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const WAIT_SEC = Number(process.env.APPROVAL_WAIT_SEC) || 60; // how long an approval waits for the iPad
 const RUNNING_STALE_MS = (Number(process.env.RUNNING_STALE_MIN) || 30) * 60e3;
@@ -893,7 +893,7 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// LISTEN_HOST (default all IPv4 addresses) plus ::1 for localhost. Hook endpoints check
+// LISTEN_HOST (default 127.0.0.1) plus ::1 for localhost. Hook endpoints check
 // isLoopback() themselves, so they stay on this Mac whatever LISTEN_HOST is.
 const servers = [server, server6];
 const coversIPv6Loopback = LISTEN_HOST === '::' || LISTEN_HOST === '::1';

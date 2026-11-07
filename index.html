@@ -131,7 +131,7 @@ html[data-theme="dark"] .skip-link{background:#f4f6fa;color:#0e1218}
 html[data-theme="dark"] .task-dialog{background:var(--paper);border-color:var(--line);color:var(--ink)}
 
 
-.approval-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:24px;border:1px solid var(--line);border-radius:14px;background:var(--paper);color:var(--ink)}.device-code{display:grid;place-items:center;width:248px;height:248px;margin:18px auto;border:1px solid var(--line);border-radius:12px;background:#fff}.device-code img{image-rendering:pixelated}.device-network{display:flex;gap:10px;align-items:center;margin-top:12px;font-size:13px;color:var(--muted)}.device-warning{color:var(--need)!important}#open-device svg{font-size:18px}#open-device[hidden]{display:none}
+.approval-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:24px;border:1px solid var(--line);border-radius:14px;background:var(--paper);color:var(--ink)}.device-code{display:grid;place-items:center;width:248px;height:248px;margin:18px auto;border:1px solid var(--line);border-radius:12px;background:#fff}.device-code img{image-rendering:pixelated}.device-dialog h2{margin-top:4px}.device-network{display:flex;gap:10px;align-items:center;margin-top:14px;font-size:13px;color:var(--muted)}.device-network select{height:32px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:inherit;font-size:13px}.device-network select:focus-visible{outline:3px solid #4594cc90;outline-offset:2px}html[data-theme="dark"] .device-network select{background:#171d26;border-color:#303947}.device-warning{color:var(--need)!important}#open-device svg{font-size:18px}#open-device[hidden]{display:none}
 .approval-dialog::backdrop{background:#07101a88;backdrop-filter:blur(3px)}.approval-dialog header{display:flex;align-items:center;gap:10px}.approval-dialog header strong{flex:1}.approval-dialog h2{font-size:22px;line-height:1.3;margin:20px 0 10px}.approval-dialog p{font-size:13px;line-height:1.5;color:var(--muted)}.approval-dialog pre{max-height:40dvh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:8px;padding:14px;font:12px/1.6 ui-monospace,monospace;background:var(--bg)}.approval-dialog footer{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}.approval-dialog .action{min-width:0;flex:1}.approval-dialog button:disabled{opacity:.5;cursor:default}.approval-dialog .minor{margin-left:auto}.approval-time{font-variant-numeric:tabular-nums}.command.request-summary{font-family:inherit;display:flex;justify-content:space-between;gap:12px}.request-summary>span:first-child{overflow:hidden;text-overflow:ellipsis}.approval-time{flex:none}.notice{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:99;width:max-content;max-width:calc(100vw - 32px);padding:12px 18px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);box-shadow:0 4px 24px #0002;font-size:13px;line-height:1.5}.notice.error{border-color:var(--need)}
 
 /* Pagination shares the section heading, leaving the full panel height for tasks. */
@@ -236,10 +236,11 @@ body{padding-top:14px;padding-bottom:14px}
 @media(max-width:600px){
  body{padding:12px}
  .mast{position:relative;flex:0 0 72px;display:flex;flex-direction:column;justify-content:flex-start;gap:10px;align-items:stretch}
- .mast h1{font-size:24px;line-height:30px;padding-right:76px}
+ .mast h1{font-size:24px;line-height:30px;padding-right:114px}
  .head-right{display:contents}
  .mast .sound{position:absolute;top:0;right:0;width:30px;height:30px}
- .mast #chat-status{right:38px}
+ .mast #open-device{right:38px}
+ .mast #chat-status{right:76px}
  .legend{width:100%;margin:0;gap:14px;font-size:10px;justify-content:space-between}
  .legend span{gap:4px}
  .legend .dot{width:6px;height:6px}
@@ -562,9 +563,9 @@ $('chat-status').onclick=()=>{const health=latest?.chatTracking,status=health?.s
 // "Open on iPad or phone": only on this Mac's own dashboard. The QR code carries the key, so
 // it is built here from the key this page already has; the server only lists LAN addresses.
 // It stays covered until "Show code", and closing the dialog removes it.
-const DEVICE_COPY={title:'Open on iPad or phone',intro:'Scan this code with the camera on your iPad or phone. Both devices need to be on the same Wi-Fi as this Mac.',warning:"Anyone with this code can approve requests. Don't photograph or share it, and only use it on your home Wi-Fi or another network you trust.",network:'Network',none:'No network address found. Connect this Mac to Wi-Fi or Ethernet, then try again.',localOnly:'This dashboard is set to only work on this Mac (MONITOR_HOST=127.0.0.1 in the com.lu.agent-monitor LaunchAgent). Remove that setting and reload the LaunchAgent to use it on other devices.',show:'Show code',close:'Close'};
+const DEVICE_COPY={title:'Open on iPad or phone',intro:'Scan this code with the camera on your iPad or phone. Both devices need to be on the same Wi-Fi as this Mac.',warning:"Anyone with this code can approve requests. Don't photograph or share it, and only use it on your home Wi-Fi or another network you trust.",network:'Network',none:'No network address found. Connect this Mac to Wi-Fi or Ethernet, then try again.',localOnly:'Right now, only this Mac can open the dashboard. To use it on an iPad or phone, set MONITOR_HOST=0.0.0.0 where the server is started (for example, its LaunchAgent), then reload it.',show:'Show code',close:'Close'};
 function syncDeviceButton(d){$('open-device').hidden=!(d&&d.local===true)}
-$('open-device').onclick=async()=>{document.querySelector('.device-dialog')?.remove();const d=el('dialog','task-dialog device-dialog'),head=el('header',null,DEVICE_COPY.title),close=el('button','minor');close.innerHTML='<i class="ri-close-line"></i>';close.ariaLabel=DEVICE_COPY.close;close.type='button';close.onclick=()=>d.close();head.append(close);d.append(head,el('h2',null,DEVICE_COPY.title));d.addEventListener('close',()=>d.remove());document.body.append(d);d.showModal();
+$('open-device').onclick=async()=>{document.querySelector('.device-dialog')?.remove();const d=el('dialog','task-dialog device-dialog'),head=el('header'),close=el('button','minor');close.innerHTML='<i class="ri-close-line"></i>';close.ariaLabel=DEVICE_COPY.close;close.type='button';close.onclick=()=>d.close();head.append(close);d.append(head,el('h2',null,DEVICE_COPY.title));d.addEventListener('close',()=>d.remove());document.body.append(d);d.showModal();
  let info=null;try{const r=await api('/lan-addresses');if(r.ok)info=await r.json()}catch(_){}
  if(!d.isConnected)return;
  if(!info||info.localOnly||!info.addresses?.length){d.append(el('p',null,info?.localOnly?DEVICE_COPY.localOnly:DEVICE_COPY.none));return}
