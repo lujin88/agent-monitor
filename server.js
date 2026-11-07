@@ -538,12 +538,14 @@ function applyEvent(e) {
 
 // A failure while handling one request must never take down the monitor (and with it
 // every held approval): answer 500 instead of leaving an unhandled rejection.
-const server = http.createServer((req, res) => {
+// server answers on 127.0.0.1; server6 on ::1 (see the listen calls at the end).
+const server = http.createServer(onRequest), server6 = http.createServer(onRequest);
+function onRequest(req, res) {
   handleRequest(req, res).catch(() => {
     if (!res.headersSent) { try { send(res, 500, { ok: false, error: 'internal error' }); } catch (_) {} }
     else res.destroy();
   });
-});
+}
 
 async function handleRequest(req, res) {
   const u = new URL(req.url, 'http://localhost');
@@ -818,8 +820,10 @@ function shutdown(signal) {
   for (const t of background) clearInterval(t);
   try { stopGrokWatch(); } catch (_) {}
   if (stopCodex) stopCodex();
-  server.close();
-  if (server.closeIdleConnections) server.closeIdleConnections();
+  for (const server of servers) {
+    server.close();
+    if (server.closeIdleConnections) server.closeIdleConnections();
+  }
 
   // Held hooks get "none" (the normal prompt appears on the Mac). Their sessions keep the
   // approval marker, so the next start shows "Dashboard restarted. Confirm ... in the agent app."
@@ -842,14 +846,22 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('\nAgent Monitor is running.\n');
-  console.log(`  On this Mac:  http://localhost:${PORT}/?key=${TOKEN}`);
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const i of list || []) {
-      if (i.family === 'IPv4' && !i.internal) console.log(`  On your iPad: http://${i.address}:${PORT}/?key=${TOKEN}`);
-    }
+// Loopback only: the dashboard and /ask can approve commands, so nothing on the
+// network may reach them. macOS resolves "localhost" to ::1 first, so listen on both
+// loopback addresses. A Mac without IPv6 loopback keeps working on 127.0.0.1.
+const servers = [server, server6];
+server6.on('error', (err) => {
+  if (err.code === 'EADDRNOTAVAIL' || err.code === 'EAFNOSUPPORT') {
+    console.error(`IPv6 loopback unavailable (${err.code}); use http://127.0.0.1:${PORT}/`);
+    return;
   }
-  console.log('\nOpen the iPad link once; the key is remembered. Keep the key private: it can approve commands.');
-  console.log(`Approvals wait ${WAIT_SEC}s for the iPad, then fall back to the normal prompt on the Mac.\n`);
+  throw err;
+});
+server6.listen(PORT, '::1');
+server.listen(PORT, '127.0.0.1', () => {
+  console.log('\nAgent Monitor is running.\n');
+  // The access key is never printed: logs are kept on disk. It is in token.txt.
+  console.log(`  On this Mac:  http://localhost:${PORT}/`);
+  console.log('\nAdd ?key=<contents of token.txt> once; the key is remembered. Keep it private: it can approve commands.');
+  console.log(`Approvals wait ${WAIT_SEC}s for the dashboard, then fall back to the normal prompt on the Mac.\n`);
 });
