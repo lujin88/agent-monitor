@@ -153,13 +153,20 @@ function realInside(root, p) {
 // Agent permission and hook files: changing them changes what runs without asking.
 // Checked as written and after symlinks; case-insensitive like the default macOS disk.
 const AGENT_CONFIG_DIRS = new Set(['.claude', '.codex']);
-function agentConfigName(full) {
+// Also files that make tools run commands or load instructions: .mcp.json, .husky/*,
+// .vscode/tasks.json, .git/hooks/*, and CLAUDE.md / AGENTS.md at the project root.
+function agentConfigName(full, root) {
   const parts = full.toLowerCase().split(path.sep), name = parts[parts.length - 1];
-  return parts.some((x) => AGENT_CONFIG_DIRS.has(x)) || /^settings.*\.json$/.test(name) || name === 'hooks.json';
+  if (parts.some((x) => AGENT_CONFIG_DIRS.has(x)) || /^settings.*\.json$/.test(name) || name === 'hooks.json') return true;
+  if (name === '.mcp.json' || parts.includes('.husky')) return true;
+  if (name === 'tasks.json' && parts[parts.length - 2] === '.vscode') return true;
+  if (parts.some((x, i) => x === '.git' && parts[i + 1] === 'hooks')) return true;
+  if ((name === 'claude.md' || name === 'agents.md') && root && path.dirname(full).toLowerCase() === root.toLowerCase()) return true;
+  return false;
 }
-function agentConfigPath(base, p) {
-  const full = path.resolve(base, p), real = realish(full);
-  return agentConfigName(full) || (!!real && agentConfigName(real));
+function agentConfigPath(base, p, root) {
+  const full = path.resolve(base, p), real = realish(full), realRoot = root && realish(root);
+  return agentConfigName(full, root && path.resolve(root)) || (!!real && agentConfigName(real, realRoot));
 }
 
 // Interpreters given code on the command line, or on stdin from a pipe, run code nobody
@@ -366,22 +373,28 @@ function gitListOnly(sub, rest) {
 }
 
 // pnpm/yarn exec <bin>: <bin> must be an installed package binary in node_modules/.bin of
-// this folder or a parent (workspaces), never a system program like rm or sh.
-function installedBin(args, base) {
+// this folder or a parent inside the project, never a system program like rm or sh.
+// The search stops at the first git or workspace root and never leaves the project
+// folder, so ~/node_modules/.bin and the like are never trusted.
+function isPackageRoot(dir) {
+  if (fs.existsSync(path.join(dir, '.git')) || fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) return true;
+  try { return !!JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).workspaces; } catch (_) { return false; }
+}
+function installedBin(args, base, root) {
   const at = args.indexOf('exec');
   const rest = args.slice(at + 1);
   if (!rest.length || rest[0].startsWith('-') || !/^[A-Za-z0-9@][A-Za-z0-9._@-]*$/.test(rest[0])) return false;
   if (/^(node|nodejs|bun|deno|python3?|ruby|perl|swift|sh|bash|zsh|env)$/.test(rest[0])) return false; // interpreters/shells
-  for (let dir = path.resolve(base || '/'), i = 0; i < 8; i++) {
+  if (!root || !base) return false;
+  const top = path.resolve(root);
+  for (let dir = path.resolve(base); inside(top, dir); dir = path.dirname(dir)) {
     try { if (fs.statSync(path.join(dir, 'node_modules', '.bin', rest[0])).isFile()) return true; } catch (_) {}
-    const up = path.dirname(dir);
-    if (up === dir) break;
-    dir = up;
+    if (dir === top || isPackageRoot(dir) || path.dirname(dir) === dir) break;
   }
   return false;
 }
 
-function commandKind(argv, base) {
+function commandKind(argv, base, root) {
   const [cmd, ...args] = argv;
   if (cmd === 'git') {
     const at = args.findIndex((a) => !a.startsWith('-')), sub = args[at], global = at < 0 ? args : args.slice(0, at);
@@ -454,7 +467,7 @@ function commandKind(argv, base) {
     if (cmd === 'yarn' && sub === undefined) return null; // bare `yarn` installs
     // npm exec can download and run any package. pnpm/yarn exec run ANY command with
     // node_modules/.bin on PATH, so only a program installed there (no options) is automatic.
-    if (sub === 'exec' && cmd !== 'npm') return installedBin(args, base) ? 'dev' : null;
+    if (sub === 'exec' && cmd !== 'npm') return installedBin(args, base, root) ? 'dev' : null;
     return NPM_DEV.has(sub) ? 'dev' : null; // install, ci, publish, add, update, ...
   }
   if (cmd === 'find') return args.some((a) => ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'].includes(a)) ? null : 'read';
@@ -566,7 +579,7 @@ function classifyShell(script, cwd) {
       }
     }
     if (argv[0] === 'cd' && (argv.length < 2 || argv[1] === '-' || argv[1] === '--')) return { allow: false, reason: 'cd leaves the project' };
-    const k = commandKind(argv, commandBase);
+    const k = commandKind(argv, commandBase, cwd);
     if (!k) return { allow: false, reason: `${argv[0]} needs your decision` };
     if (inlineCode(argv, piped)) return { allow: false, reason: 'runs inline code' };
     if (!inspectSafe(argv)) return { allow: false, reason: 'debugger open beyond this Mac' };
@@ -585,7 +598,7 @@ function classifyShell(script, cwd) {
         if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) continue;
         if (a.startsWith('-') && !inside(commandBase, value)) return { allow: false, reason: 'path outside the project' };
         if (!realInside(cwd, path.resolve(commandBase, value))) return { allow: false, reason: 'path outside the project' };
-        if (agentConfigPath(commandBase, value)) return { allow: false, reason: 'agent settings or hooks' };
+        if (agentConfigPath(commandBase, value, cwd)) return { allow: false, reason: 'agent settings or hooks' };
       }
     }
     if (argv[0] === 'cd') base = path.resolve(base, argv[1] || base);
@@ -664,7 +677,7 @@ function classify(p, env = process.env) {
       if (typeof target !== 'string' || !target) return { allow: false, reason: 'no file path' };
       if (!inside(cwd, target) || protectedPath(cwd, target)) return { allow: false, reason: 'path outside the project' };
       if (!realInside(cwd, target)) return { allow: false, reason: 'path outside the project' };
-      if (agentConfigPath(cwd, target)) return { allow: false, reason: 'agent settings or hooks' };
+      if (agentConfigPath(cwd, target, cwd)) return { allow: false, reason: 'agent settings or hooks' };
       if (inMonitorDir(path.resolve(cwd, target))) return { allow: false, reason: 'Agent Monitor folder' };
       return { allow: true, rule: 'edit inside project' };
     }

@@ -76,8 +76,23 @@ try {
 } finally { fs.rmSync(proj, { recursive: true, force: true }); }
 
 // 3. Dashboard: a ?key= in the address bar is stored, then removed from the URL.
+// Runs the dashboard's own key-reading statement with a fake location/history/storage.
 const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
-assert(/searchParams\.delete\('key'\);history\.replaceState\(/.test(html), 'index.html removes ?key= from the address bar');
+const keyStart = html.indexOf("try{const u=new URL(location.href)");
+assert(keyStart >= 0, 'index.html reads the key from the address bar');
+const keyCode = html.slice(keyStart, html.indexOf('catch(_){}', keyStart) + 'catch(_){}'.length);
+function dashboardKey(href, stored = null) {
+  const store = new Map(stored ? [['amkey', stored]] : []), replaced = [];
+  const ctx = { URL, location: { href }, localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
+    history: { replaceState: (_s, _t, url) => replaced.push(url) } };
+  vm.runInNewContext('let key="";' + keyCode + ';globalThis.out=key;', ctx);
+  return { key: ctx.out, stored: store.get('amkey'), replaced };
+}
+let dk = dashboardKey('http://localhost:7777/?key=abc123&tab=need#x');
+assert.equal(dk.key, 'abc123'); assert.equal(dk.stored, 'abc123');
+assert.deepEqual(dk.replaced, ['/?tab=need#x'], 'key removed, other parts of the URL kept');
+dk = dashboardKey('http://localhost:7777/', 'saved');
+assert.equal(dk.key, 'saved'); assert.deepEqual(dk.replaced, [], 'nothing to remove without ?key=');
 
 // 4. Server: loopback only, no key in the startup output, writes need the x-key header.
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hardening-server-')), port = 19900 + Math.floor(Math.random() * 90), key = 'hardening-key-31337';
@@ -97,6 +112,7 @@ const get = (host, route, headers = {}) => fetch(`http://${host}:${port}${route}
     assert.equal((await get('127.0.0.1', '/state?key=' + key)).status, 200, 'GET still accepts ?key= (first visit)');
     const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal);
     if (lan) await assert.rejects(get(lan.address, '/state', { 'x-key': key }), 'not reachable from the network');
+    else console.log('SKIP: no non-loopback IPv4 interface, the "not reachable from the network" check did not run.');
     const post = (route, headers) => fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ aid: '0000000000000000', decision: 'deny' }) });
     assert.equal((await post('/decide?key=' + key, {})).status, 401, 'POST ignores ?key=');
     assert.notEqual((await post('/decide', { 'x-key': key })).status, 401, 'POST with x-key is authorised');

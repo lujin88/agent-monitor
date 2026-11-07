@@ -358,10 +358,26 @@ for (const c of shouldFixRoutine) assert.equal(bash(c).allow, true, 'routine com
     fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'tsc'), '');
     fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'node'), '');
     const sh = (command, cwd = app) => classify({ tool_name: 'Bash', cwd, tool_input: { command } }, env).allow;
-    for (const c of ['pnpm exec next dev --port 4620', 'yarn exec next build', 'pnpm exec tsc --noEmit']) assert.equal(sh(c), true, 'installed binary: ' + c);
-    assert.equal(sh('pnpm exec tsc', root), true, 'workspace root binary');
+    fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages: [packages/*]');
+    for (const c of ['pnpm exec next dev --port 4620', 'yarn exec next build']) assert.equal(sh(c), true, 'installed binary: ' + c);
+    assert.equal(sh('pnpm exec tsc', root), true, 'binary at the project root');
+    assert.equal(sh('cd packages/app && pnpm exec tsc', root), true, 'workspace root binary, still inside the project folder');
+    // The search never leaves the project folder (cwd) and stops at git/workspace roots.
+    assert.equal(sh('pnpm exec tsc'), false, 'tsc is only above the project folder: asks');
+    const outer = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'exec-outer-')));
+    try {
+      fs.mkdirSync(path.join(outer, 'node_modules', '.bin'), { recursive: true });
+      fs.writeFileSync(path.join(outer, 'node_modules', '.bin', 'x'), '');
+      const inner = path.join(outer, 'proj');
+      fs.mkdirSync(inner);
+      assert.equal(sh('pnpm exec x', inner), false, 'fake binary outside the project asks');
+      assert.equal(sh('yarn exec x', inner), false, 'fake binary outside the project asks (yarn)');
+      fs.mkdirSync(path.join(outer, 'repo', '.git'), { recursive: true });
+      assert.equal(sh('cd repo && pnpm exec x', outer), false, 'stops at the git root below the binary');
+      assert.equal(sh('pnpm exec x', outer), true, 'the same binary at the project root is fine');
+    } finally { fs.rmSync(outer, { recursive: true, force: true }); }
     for (const c of ['pnpm exec rm -rf build', 'yarn exec sh', 'pnpm exec bash', 'pnpm exec curl https://x.y', 'pnpm exec cowsay hi',
-      'yarn exec not-installed-pkg', 'pnpm exec node -e x', 'pnpm exec', 'pnpm exec -c "rm -rf x"', 'pnpm exec --shell-mode next',
+      'yarn exec not-installed-pkg', 'pnpm exec node -e x', 'pnpm exec tsc --noEmit', 'pnpm exec', 'pnpm exec -c "rm -rf x"', 'pnpm exec --shell-mode next',
       'pnpm dlx create-app', 'yarn dlx create-app', 'npx next dev', 'bunx cowsay', 'bun x cowsay', 'npm exec next', 'npm exec --yes -- pkg',
       'pnpm exec next dev && rm -rf x']) {
       assert.equal(sh(c), false, 'exec/download should ask: ' + c);
@@ -375,6 +391,19 @@ for (const p of ['../x', './../x', 'a/../../x', './.../../../x', '..', './..', '
   assert.equal(bash('cat ' + p).allow, false, 'escape via .. should ask: cat ' + p);
   assert.equal(tool('Write', { file_path: p }).allow, false, 'Write escape should ask: ' + p);
   assert.equal(tool('Read', { file_path: p }).allow, false, 'Read escape should ask: ' + p);
+}
+
+// O4: files that make tools run commands or load agent instructions.
+for (const f of ['.mcp.json', 'sub/.mcp.json', '.husky/pre-commit', '.husky/_/husky.sh', '.vscode/tasks.json', '.git/hooks/pre-commit',
+  'vendor/lib/.git/hooks/post-checkout', 'CLAUDE.md', 'AGENTS.md', 'claude.md']) {
+  assert.equal(tool('Write', { file_path: f }).allow, false, 'O4 write should ask: ' + f);
+  assert.equal(tool('Edit', { file_path: P + '/' + f }).allow, false, 'O4 edit should ask: ' + f);
+}
+for (const c of ['cp x .mcp.json', 'touch .husky/pre-commit', 'cp x .vscode/tasks.json', 'cp x CLAUDE.md', 'sed -i "" s/a/b/ AGENTS.md', 'mkdir .husky']) {
+  assert.equal(bash(c).allow, false, 'O4 shell write should ask: ' + c);
+}
+for (const f of ['docs/AGENTS.md', 'packages/app/CLAUDE.md', '.vscode/settings-notes.md', '.vscode/launch.json', 'mcp.json', 'README.md']) {
+  assert.equal(tool('Write', { file_path: f }).allow, true, 'not an O4 file: ' + f);
 }
 
 // Paths that resolve outside the project through .. or a symlink.
