@@ -9,7 +9,15 @@ const http = require('http');
 const ROOT = path.join(require('os').homedir(), '.claude', 'projects');
 // Claude Code names project folders after the absolute path with separators replaced by '-'.
 const HOME_MARKER = require('os').homedir().replace(/[^a-zA-Z0-9]/g, '-') + '-';
-const MONITOR = new URL(process.env.MONITOR_URL || 'http://127.0.0.1:7777');
+// The token goes to this address, so only this Mac is accepted; anything else uses the default.
+function localMonitorUrl(value) {
+  try {
+    const u = new URL(value);
+    if (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) return u;
+  } catch (_) {}
+  return new URL('http://127.0.0.1:7777');
+}
+const MONITOR = localMonitorUrl(process.env.MONITOR_URL || 'http://127.0.0.1:7777');
 const TOKEN_FILE = path.join(__dirname, 'token.txt');
 const POLL_MS = 2000;
 const HOOK_GRACE_MS = 3000;

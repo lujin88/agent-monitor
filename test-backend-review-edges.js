@@ -42,7 +42,7 @@ function slice(a,b){const i=src.indexOf(a),j=src.indexOf(b,i);assert(i>=0&&j>i,a
   const routes=['/event','/ask','/usage','/ack','/decide','/dismiss'];
   for(const route of routes){
     let finishBody, result, mutations=0;
-    const httpCtx=vm.createContext({URL,closing:false,keyOk:()=>true,isLoopback:()=>true,
+    const httpCtx=vm.createContext({URL,closing:false,keyOk:()=>true,isLoopback:()=>true,hostAllowed:()=>true,
       readJson:()=>new Promise(r=>{finishBody=r}),send:(res,code,body)=>{result={code,body}},
       applyEvent(){mutations++},acknowledge(){mutations++},decide(){mutations++},setUsage(){mutations++},save(){mutations++}});
     vm.runInContext(slice('async function handleRequest(', '\n// Hooks are fast'),httpCtx);

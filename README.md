@@ -25,7 +25,28 @@ cd ~/agent-monitor
 node server.js
 ```
 
-需要 Node 16 以上（`node -v` 检查）。终端会打印两个链接，**链接里带一段访问密钥（`?key=...`）**。iPad 用 Safari 打开 `On your iPad` 那个（两台设备要在同一个 Wi-Fi）。密钥会被记住，只需要打开一次。
+需要 Node 16 以上（`node -v` 检查）。终端只打印 `http://localhost:7777/`，**不打印访问密钥**（日志会留在磁盘上）。在 Mac 上第一次打开时，在地址后面加 `?key=<token.txt 里的内容>`，密钥会被记住，地址栏里的 key 随即被去掉。
+
+**iPad 怎么打开**：默认只有这台 Mac 能打开看板。要在 iPad 上审批，先按下面「监听地址」打开局域网，然后在 Mac 上打开看板，点右上角的二维码按钮（Open on iPad or phone），再点 Show code，用 iPad 相机扫一下。iPad 和 Mac 要在同一个 Wi-Fi。二维码里带着密钥，别拍照、别分享。**只在家里或可信 Wi-Fi 下用 iPad 审批。**
+
+**监听地址**：默认只监听本机（`127.0.0.1` 和 `::1`）。要让同一个 Wi-Fi 里的 iPad 连上，设 `MONITOR_HOST=0.0.0.0`。用 LaunchAgent 跑的话，在 plist 里加：
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+  <key>MONITOR_HOST</key>
+  <string>0.0.0.0</string>
+</dict>
+```
+
+（plist 里已经有 `EnvironmentVariables` 的话，只在里面加 `MONITOR_HOST` 这一对。）改完要重新加载，光 `launchctl kickstart -k` 不会重新读 plist：
+
+```sh
+launchctl bootout gui/$(id -u)/<你的 LaunchAgent label>
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<你的 LaunchAgent label>.plist
+```
+
+不管怎么设，hook 上报（`/event`、`/ask`、`/ack`、`/usage`）和 `/chat-tracking/setup` 都只接受本机请求；带 `X-Forwarded-For` / `Forwarded` / `Tailscale-*` 头的请求不算本机。看板只接受用 IP、`localhost` 或 `*.local` 访问（防 DNS rebinding），也不发任何 CORS 头。
 
 密钥也保存在 `~/agent-monitor/token.txt`。因为它能批准命令，不要发给别人，也不要截图外传。
 
@@ -178,11 +199,25 @@ Claude Code 和 Codex 在要弹批准窗口时，会先问 `approve.js`。Needs 
 - 切换已有标签页、等待页面文字（显式超时最多 60 秒）、调整窗口尺寸（每边 1–8192 像素）。这些浏览器操作不要求项目目录；未知参数仍需确认。
 - `git pull --ff-only`，以及对 `origin/upstream` 的 `git ls-remote` 查询。快进拉取会修改本地文件，并可能执行已配置的 Git hooks，不是只读操作。
 
-下面这些**照样问你**：删除、其他联网命令（如 `curl`、普通 pull、push、fetch、安装）、`sudo`、强制覆盖或改写 Git 历史、项目外文件路径、`.git` 写入、重定向、变量与通配符，以及未知工具。浏览器点击、填表、上传、执行脚本或保存输出到文件也不自动放行。
+下面这些在项目文件夹里也**照样问你**（走平常的批准，不会直接拒绝）：
+
+- 解释器直接执行命令行里或管道传进来的代码：`node -e/-p/--eval/--print`、`python3 -c`、`ruby -e`、`deno eval`、`bun -e`、`echo … | node`、`node -`。运行项目里的脚本文件（`node script.js`、`python3 tool.py`）照常自动批准。
+- 写入路径经过 `..` 或符号链接后落在项目外的（Edit/Write、`cp`、`touch`、`sed -i`、`--out=…` 这类参数）。
+- 改 agent 自己的权限和 hook 文件：任何 `.claude/`、`.codex/` 目录，以及 `settings*.json`、`hooks.json`。读取不受影响。
+- `git branch` / `git tag` 除列表形式（`git branch`、`-a`、`-r`、`-v`、`--show-current`、`--list 模式`、`--contains X`；`git tag`、`-l`、`-n`）以外的所有写法，包括 `--delete`、`--move`、`--copy`、`-f`、创建新分支或标签。
+
+- Agent Monitor 自己所在的文件夹（规则文件、`token.txt`、日志）：读和写都要问。
+- 安装和拉远程代码：`bun` 只放行 `run/test/build`，`go` 只放行 `build/test/vet/fmt/env/version` 和本地路径的 `run`（`go env -w` 要问），`cargo` 只放行 `build/test/check/run`，`deno` 只放行 `run/test/check/fmt/lint/task` 且不能带 `npm:`/`jsr:`/网址；`npm exec` 要问。
+- `--inspect` 调试端口只能开在 `127.0.0.1` 或 `localhost`。
+- 会写文件、执行命令或丢掉没提交改动的写法：不带参数的 `cd`、`sed` 的 `w/e/r` 命令和 `-f`、`sort -o`、带 getline 或管道的 `awk`、`rg --pre`、`make -f -` / `--eval`、`swift -`、强制或带路径的 `git checkout`、`git restore --worktree`、`git switch -f`、`git mv -f`。
+
+还有：删除、其他联网命令（如 `curl`、普通 pull、push、fetch、安装）、`sudo`、强制覆盖或改写 Git 历史、项目外文件路径、`.git` 写入、重定向、变量与通配符，以及未知工具。浏览器点击、填表、上传、执行脚本或保存输出到文件也不自动放行。
 
 新请求会重新加载规则，无需重启 Monitor；已弹出的旧请求不会补批。这些规则不能取消宿主应用自身的强制审批。验证命令：`node test-auto-approve.js`。
 
-注意：`node`、`python3`、`npm test` 运行的是项目里的代码，代码能做什么，它们就能做什么。这是有意放开的。
+注意：`node`、`python3`、`npm test` 运行的是项目里的代码，代码能做什么，它们就能做什么。这是有意放开的（少收审批）。
+
+**这意味着自动审批只能防 agent 失手，防不了存心使坏的 agent**：agent 可以先写一个脚本（自动批准），再运行它（自动批准）。这个脚本能读 `token.txt`，再调用 `/decide`，把它自己在看板上排队的审批批掉。同样是两步的还有：改 `.husky/pre-commit` 再 `git commit`、改 `package.json` 的 scripts 再 `npm test`、改 `Makefile` 再 `make`。真要防住，需要让 agent 用另一个 macOS 用户运行，读不到这个文件夹。
 
 自动批准会在 `auto-approve.log` 记一行（时间、来源、工具、规则、项目名），**不记命令内容**。要关掉：在 Claude Code / Codex 的启动环境里设 `AUTO_APPROVE=off`。
 
@@ -272,8 +307,8 @@ POST http://localhost:7777/event      请求头 x-key: <密钥>
 
 ## 已知限制
 
-- 密钥能批准命令，保管好。它保存在 `token.txt`，想换就删掉这个文件再重启服务，iPad 需要用新链接重新打开一次。
-- 服务只在局域网里跑，没有加密（http）。只在自己信任的 Wi-Fi 里用，不要在咖啡馆、酒店这类公共网络里开。
+- 密钥能批准命令，保管好。它保存在 `token.txt`（权限 600，16 字节随机数的十六进制），想换就删掉这个文件再重启服务，浏览器需要用新密钥重新打开一次。
+- 局域网这条路（`MONITOR_HOST=0.0.0.0`）是 http，没有加密。同一个 Wi-Fi 里能抓包的人可以看到密钥和审批内容。只在家里或可信 Wi-Fi 下打开；在咖啡馆、酒店这类公共网络，去掉这个设置。
 - Mac 休眠时服务会停，iPad 上会显示「连不上 Mac」，批准也会自动退回 Mac。
 - 「运行中」的任务如果被你手动打断，Claude Code 不会发 Stop；30 分钟没有活动后显示 **Status unknown**（不会当作完成），点 Dismiss 即可移除记录。
 - 任务太多时，各区按实际高度分页（区块标题右侧的翻页按钮），同一 App 的任务始终在同一张卡片里，不截断文字。

@@ -11,7 +11,15 @@ const path = require('path');
 
 const argSource = process.argv[2] || 'unknown';
 const status = process.argv[3] || 'running';
-const SERVER = new URL(process.env.MONITOR_URL || 'http://127.0.0.1:7777');
+// The token goes to this address, so only this Mac is accepted; anything else uses the default.
+function localMonitorUrl(value) {
+  try {
+    const u = new URL(value);
+    if (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) return u;
+  } catch (_) {}
+  return new URL('http://127.0.0.1:7777');
+}
+const SERVER = localMonitorUrl(process.env.MONITOR_URL || 'http://127.0.0.1:7777');
 
 let TOKEN = '';
 try { TOKEN = fs.readFileSync(path.join(__dirname, 'token.txt'), 'utf8').trim(); } catch (_) {}

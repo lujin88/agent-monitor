@@ -18,7 +18,15 @@ const fs = require('fs');
 const path = require('path');
 
 const source = process.argv[2] || 'unknown';
-const SERVER = new URL(process.env.MONITOR_URL || 'http://127.0.0.1:7777');
+// The token goes to this address, so only this Mac is accepted; anything else uses the default.
+function localMonitorUrl(value) {
+  try {
+    const u = new URL(value);
+    if (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) return u;
+  } catch (_) {}
+  return new URL('http://127.0.0.1:7777');
+}
+const SERVER = localMonitorUrl(process.env.MONITOR_URL || 'http://127.0.0.1:7777');
 const MAX_WAIT_MS = 5 * 60 * 1000; // hard ceiling; the server's own wait ends sooner
 const ACK_TIMEOUT_MS = 1500;       // the server waits longer than this for the receipt
 const MAX_RESPONSE = 16 * 1024;    // a decision is tiny; anything larger is not trusted
@@ -99,6 +107,65 @@ function post(pathname, payload, onDone, timeoutMs) {
   req.end(body);
 }
 
+// Approval card text (UX copy, delivered 2026-11-07).
+const COPY = {
+  before: '--- Before ---',
+  after: '--- After ---',
+  content: '--- Content to write ---',
+  contentReplaces: '--- Content to write (replaces existing file) ---',
+  moreLines: (n) => (n === 1 ? '… 1 more line not shown' : `… ${n} more lines not shown`),
+  moreChars: (n) => (n === 1 ? '… line cut short, 1 more character not shown' : `… line cut short, ${n} more characters not shown`),
+  moreEdits: (n) => (n === 1 ? '… 1 more edit not shown' : `… ${n} more edits not shown`),
+  editBefore: (i, total) => `--- Edit ${i} of ${total}: Before ---`,
+  editAfter: (i, total) => `--- Edit ${i} of ${total}: After ---`,
+  toolWithEdits: (tool, n) => `${tool} (${n} edits)`,
+  agentSays: 'Agent says (unverified): ',
+};
+const SNIPPET_LINES = 20, SNIPPET_CHARS = 1500;
+// The first lines of agent-supplied text, so an Edit/Write is approved knowing its content.
+// Cuts at whole lines; only a single over-long first line is cut by characters.
+function snippet(text) {
+  const all = String(text ?? '');
+  const lines = all.split('\n');
+  const kept = [];
+  let used = 0;
+  for (const line of lines.slice(0, SNIPPET_LINES)) {
+    if (used + line.length > SNIPPET_CHARS) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  if (!kept.length && lines.length) {
+    // The first line alone is too long: cut it, and say separately how many lines follow.
+    const head = lines[0].slice(0, SNIPPET_CHARS);
+    const out = [head, COPY.moreChars(lines[0].length - head.length)];
+    if (lines.length > 1) out.push(COPY.moreLines(lines.length - 1));
+    return out.join('\n');
+  }
+  const hidden = lines.length - kept.length;
+  return kept.join('\n') + (hidden ? '\n' + COPY.moreLines(hidden) : '');
+}
+function fileRequest(input, cwd) {
+  const file = String(input.file_path || input.notebook_path);
+  const parts = [file];
+  const edit = (e) => { parts.push(COPY.before, snippet(e.old_string), COPY.after, snippet(e.new_string)); };
+  if (typeof input.old_string === 'string' || typeof input.new_string === 'string') edit(input);
+  if (Array.isArray(input.edits)) {
+    const total = input.edits.length;
+    input.edits.slice(0, 5).forEach((e, i) => {
+      if (!e || typeof e !== 'object') return;
+      parts.push(COPY.editBefore(i + 1, total), snippet(e.old_string), COPY.editAfter(i + 1, total), snippet(e.new_string));
+    });
+    if (input.edits.length > 5) parts.push(COPY.moreEdits(input.edits.length - 5));
+  }
+  if (typeof input.content === 'string') { // Write: say so when it overwrites a file
+    let exists = false;
+    try { exists = fs.existsSync(path.resolve(cwd || '/', file)); } catch (_) {}
+    parts.push(exists ? COPY.contentReplaces : COPY.content, snippet(input.content));
+  }
+  if (typeof input.new_source === 'string') parts.push(COPY.content, snippet(input.new_source)); // one notebook cell
+  return parts.join('\n');
+}
+
 function run() {
   if (started) return;
   started = true;
@@ -130,15 +197,17 @@ function run() {
   const command =
     typeof input.command === 'string' ? input.command :
     typeof input.cmd === 'string' ? input.cmd :
-    input.file_path ? `${input.file_path}` :
+    input.file_path || input.notebook_path ? fileRequest(input, cwd) :
     input.url ? `${input.url}` :
     JSON.stringify(input);
+  const note = typeof input.description === 'string' ? input.description : typeof input.justification === 'string' ? input.justification : '';
 
   post('/ask', {
     ...base,
-    tool: typeof p.tool_name === 'string' ? p.tool_name : '',
+    // MultiEdit shows its total, so a card with hidden edits is visibly incomplete.
+    tool: typeof p.tool_name !== 'string' ? '' : Array.isArray(input.edits) ? COPY.toolWithEdits(p.tool_name, input.edits.length) : p.tool_name,
     command,
-    description: typeof input.description === 'string' ? input.description : typeof input.justification === 'string' ? input.justification : '',
+    description: note ? COPY.agentSays + note : '', // written by the agent, so labelled as such
     ack: 1, // this hook confirms receipt of a decision
   }, out, MAX_WAIT_MS);
 }

@@ -168,4 +168,286 @@ assert.equal(ask.log, '', 'nothing logged when asking');
 const question = runHook({ session_id: 's', cwd: P, tool_name: 'AskUserQuestion', tool_input: {} });
 assert.equal(question.printed, '', 'questions are never answered automatically');
 
-console.log(`Auto-approve passed: ${allowed.length} commands approved, ${asked.length} still asked, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);
+const gitRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'git-c-policy-')));
+const previewRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'preview-policy-')));
+try {
+  const command = 'npm install --prefix work/local-preview react react-dom esbuild --no-audit --no-fund';
+  const request = cmd => ({ cwd: previewRoot, tool_name: 'Bash', tool_input: { command: cmd } });
+  assert.equal(classify(request(command), env).allow, true);
+  assert.equal(runHook(request(command)).requests.length, 0);
+  assert.equal(classify(request(command), { AUTO_APPROVE: 'off' }).allow, false);
+  for (const cmd of [command + ' extra-package', command + ' --global', command + ' && npm publish',
+    command.replace('work/local-preview', '/tmp/preview'), command.replace('react-dom', 'unknown'),
+    'npm_config_registry=https://example.com ' + command, command + ' --registry=https://example.com',
+    command + ';', command + ' --force']) assert.equal(classify(request(cmd), env).allow, false, cmd);
+  fs.symlinkSync(path.dirname(previewRoot), path.join(previewRoot, 'work'));
+  assert.equal(classify(request(command), env).allow, false, 'outward symlink asks');
+  fs.unlinkSync(path.join(previewRoot, 'work'));
+  fs.symlinkSync(path.join(previewRoot, 'missing'), path.join(previewRoot, 'work'));
+  assert.equal(classify(request(command), env).allow, false, 'broken symlink asks');
+} finally { fs.rmSync(previewRoot, { recursive: true, force: true }); }
+try {
+  fs.mkdirSync(path.join(gitRoot, 'REPOS', 'harness-core'), { recursive: true });
+  fs.mkdirSync(path.join(gitRoot, 'repo with spaces'));
+  fs.symlinkSync(path.dirname(gitRoot), path.join(gitRoot, 'outside'));
+  const check = command => classify({ cwd: gitRoot, tool_name: 'Bash', tool_input: { command } }, env).allow;
+  for (const command of [
+    'git -C REPOS/harness-core pull --ff-only',
+    'git --no-pager -C REPOS/harness-core diff --stat',
+    'git -C REPOS -C harness-core status',
+    "git -C 'repo with spaces' status",
+    'git -C REPOS/harness-core ls-remote --heads origin main',
+    'git -C REPOS/harness-core status && ls REPOS',
+  ]) assert.equal(check(command), true, command);
+  for (const command of [
+    'git -C .. status', 'git -C outside status', 'git -C missing status',
+    'git -C REPOS/harness-core push', 'git -C REPOS/harness-core pull',
+    'git -C REPOS/harness-core reset --hard',
+    'git -C REPOS/harness-core -c core.sshCommand=evil pull --ff-only',
+    'git -C REPOS/harness-core status && git push',
+    'git -C REPOS/harness-core -C ../../.. status',
+    'git -C REPOS/harness-core/.git status', 'git -C', 'git -C --no-pager status',
+  ]) assert.equal(check(command), false, command);
+  const request = { cwd: gitRoot, tool_name: 'Bash', tool_input: { command: 'git -C REPOS/harness-core pull --ff-only' } };
+  assert.equal(runHook(request).requests.length, 0);
+  assert.equal(classify(request, { AUTO_APPROVE: 'off' }).allow, false);
+} finally { fs.rmSync(gitRoot, { recursive: true, force: true }); }
+
+
+// Tightened rules (agent-monitor security fix). Normal development commands still pass;
+// the requests below go to the normal approval instead of being approved automatically.
+const routineDev = [
+  'node script.js', 'node scripts/build.js --watch', 'node --test', 'node --check app.js', 'node script.js -e x -p 3000',
+  'node -r ./setup.js script.js', 'npm run build', 'npm test', 'python3 tool.py', 'python3 -m pytest -q',
+  'python -u tools/check.py --out dist/x.json', 'ruby script.rb', 'bun run build', 'bun test', 'deno run main.ts',
+  'deno test', 'make', 'make test', 'cat data.json | node scripts/parse.js', 'cat a.txt | python3 tool.py',
+  'git commit -m "Update settings handling"', 'cat .claude/settings.json', 'ls .codex',
+  'tsc --outDir=dist', 'cp a.js dist/a.js', 'git commit -m "' + 'long message '.repeat(30) + '"', 'node build.js --name=' + 'x'.repeat(300),
+];
+for (const c of routineDev) assert.equal(bash(c).allow, true, 'routine command must stay automatic: ' + c + ' (' + bash(c).reason + ')');
+const inline = [
+  'node -e "require(1)"', "node -e 'x'", 'node --eval x', 'node --eval=x', 'node -p 1+1', 'node --print 1', 'node -pe 1',
+  'node -r ./setup.js -e x', 'node --input-type module -e x', 'node -', 'echo x | node', 'cat a.js | node -',
+  'python -c "print(1)"', 'python3 -c x', 'python3 -Bc x', 'python3 -W ignore -c x', 'python3 -Wonce -c x',
+  'python3 -', 'echo x | python3', 'ruby -e x', 'ruby -ne x', 'ruby -rjson -e x', 'deno eval x', 'deno repl',
+  'echo x | deno run -', 'bun -e x', 'bun --eval x', 'bun -p 1', 'bun --print 1', 'ls && node -e x',
+  'git status; python3 -c x',
+];
+for (const c of inline) {
+  const r = bash(c);
+  assert.equal(r.allow, false, 'inline code should ask: ' + c);
+}
+assert.equal(bash('node -e x').reason, 'runs inline code');
+const agentConfig = [
+  'mkdir .claude', 'touch .claude/settings.json', 'cp x.json .claude/settings.local.json', 'sed -i "" s/a/b/ .codex/config.toml',
+  'cp a.json settings.json', 'cp a.json config/settings.dev.json', 'cp a.json hooks.json', 'mv a .CLAUDE/b',
+  'cd .claude && touch x', 'git add .claude/settings.json',
+];
+for (const c of agentConfig) assert.equal(bash(c).allow, false, 'agent config write should ask: ' + c);
+for (const f of ['.claude/settings.json', '.claude/settings.local.json', '.codex/config.toml', 'sub/.claude/agents/a.md',
+  'settings.json', 'app/settings.local.json', 'hooks.json', '.Claude/x']) {
+  assert.equal(tool('Write', { file_path: P + '/' + f }).allow, false, 'edit of agent config should ask: ' + f);
+  assert.equal(tool('Edit', { file_path: f }).allow, false, 'relative edit of agent config should ask: ' + f);
+}
+assert.equal(tool('Read', { file_path: P + '/.claude/settings.json' }).allow, true, 'reading settings stays automatic');
+assert.equal(tool('Write', { file_path: P + '/src/config.json' }).allow, true, 'other JSON stays automatic');
+// The case from the review: the agent's project folder is ~/.buzz, which contains .claude/settings.json.
+const buzzHome = '/Users/test/.buzz';
+assert.equal(tool('Edit', { file_path: buzzHome + '/.claude/settings.json' }, buzzHome).allow, false);
+assert.equal(classify({ tool_name: 'Bash', cwd: buzzHome, tool_input: { command: 'cp x .claude/settings.json' } }, env).allow, false);
+// External feedback (GitHub): long-form delete/rename options slipped past the short-flag
+// guard and were approved as read-only. Only listing forms of branch/tag stay automatic.
+const gitListing = ['git branch', 'git branch -a', 'git branch -r', 'git branch -v', 'git branch -vv', 'git branch -av',
+  'git branch --show-current', 'git branch --list', 'git branch --list "feat/*"', 'git branch -l', 'git branch --all',
+  'git branch --contains HEAD', 'git branch --merged main', 'git branch --no-merged', 'git --no-pager branch -a',
+  'git tag', 'git tag -l', 'git tag --list "v1.*"', 'git tag -n5', 'git tag --contains HEAD', 'git tag --points-at HEAD'];
+for (const c of gitListing) assert.equal(bash(c).allow, true, 'listing stays automatic: ' + c + ' (' + bash(c).reason + ')');
+const gitChanges = ['git branch --delete x', 'git branch --delete --force x', 'git branch --move a b', 'git branch --move b',
+  'git branch --copy a b', 'git branch --copy b', 'git branch -d x', 'git branch -D x', 'git branch -m a b', 'git branch -M a b',
+  'git branch -c a b', 'git branch -C a b', 'git branch -f x HEAD', 'git branch --force x HEAD', 'git branch new-name',
+  'git branch new-name main', 'git branch -u origin/x', 'git branch --set-upstream-to=origin/x', 'git branch --unset-upstream',
+  'git branch --edit-description', 'git branch -l -d x', 'git branch --list x --delete', 'git branch -- x',
+  'git tag --delete v1', 'git tag -d v1', 'git tag v2', 'git tag v2 HEAD', 'git tag -a v2 -m x', 'git tag --annotate v2',
+  'git tag -f v1', 'git tag --force v1', 'git tag -s v2', 'git --no-pager tag --delete v1'];
+for (const c of gitChanges) assert.equal(bash(c).allow, false, 'branch/tag change should ask: ' + c);
+
+// QA-reproduced bypasses (review of ceb0fe1): one step writes outside the project,
+// runs a command, or throws away uncommitted work. All go to the normal approval.
+const qaBypasses = [
+  'cd && cp a.js x', 'cd', 'cd -', 'cd && cp a.js .zshrc', 'cd -- && touch x',
+  "sed -n 'w /tmp/x' a.js", "sed -n '1w out.txt' a.js", "sed 'W /tmp/x' a.js", "sed 's/a/b/w /tmp/x' a.js",
+  "sed 's/a/b/e' a.js", "sed -e 'e id' a.js", "sed -n -e 1p -e 'w /tmp/x' a.js", "sed --expression='w /tmp/x' a.js",
+  "sed 'r /etc/passwd' a.js", 'sed -f script.sed a.js', "sed -i '' '1w /tmp/x' a.js",
+  'sort -o/tmp/x a.txt', 'sort -o /tmp/x a.txt', 'sort --output=/tmp/x a.txt', 'uniq a.txt /tmp/x', 'tree -o/tmp/x',
+  'git checkout -f', 'git checkout -f main', 'git checkout --force main', 'git checkout -B main', 'git checkout -p',
+  'git checkout --ours a.js', 'git checkout --theirs a.js', 'git checkout -m main', 'git checkout HEAD~1 -- a.js',
+  'git checkout main a.js', 'git checkout --discard-changes main',
+  'git restore --staged --worktree .', 'git restore --worktree a.js', 'git restore -SW a.js', 'git restore -W a.js',
+  'git restore --source=HEAD a.js', 'git switch -f main', 'git switch --discard-changes main', 'git switch -C main',
+  'git switch --force-create main', 'git mv -f a.js b.js',
+  'rg --pre=sh x', 'rg --pre sh x', "awk 'BEGIN{while((\"id\" | getline l)>0)print l}'",
+  "awk '{getline line < \"/etc/passwd\"}'", "awk '{print $1 > \"/tmp/x\"}' a.txt", "awk '{printf \"%s\", $1 > \"/tmp/x\"}' a.txt",
+  "awk '{print | \"sh\"}' a.txt", "awk 'BEGIN{\"id\"|getline x; print x}'", "awk 'BEGIN{\"id\" |getline x}'", "awk 'BEGIN{system(\"id\")}'",
+  'make -f -', 'make -f-', 'make --file=-', 'make --makefile -', 'echo all: | make -f -',
+  'python3 -I -m pip install x', 'python3 -Impip install x', 'python3 -B -m pip install x', 'python -m venv .venv',
+  'python3 -I -m http.server',
+];
+for (const c of qaBypasses) assert.equal(bash(c).allow, false, 'QA bypass should ask: ' + JSON.stringify(c));
+const stillRoutine = [
+  'cd src && ls', "sed -n '1,20p' a.js", "sed 's/foo/bar/g' a.js", "sed -E 's#a/b#c/d#g' a.js", "sed -i '' 's/a/b/' a.js",
+  "sed -i.bak 's/a/b/' a.js", "sed -n '10,$p' a.js", "sed -e 1d -e 's/x/y/' a.js", 'sort a.txt', 'sort -o out.txt a.txt',
+  'sort -n -r a.txt', 'uniq a.txt', 'uniq -c a.txt', 'git checkout main', 'git checkout -b feat', 'git checkout -b feat origin/main',
+  'git checkout feat/x', 'git restore --staged a.js', 'git switch main', 'git switch -c feat', 'git mv a.js b.js',
+  'rg -n foo src', "awk '{print $1}' a.txt", "awk -F, '{print $2}' a.csv",
+  'make', 'make test', 'make -C src', 'make -f build.mk', 'python3 -m pytest -q', 'python3 -I tool.py',
+];
+for (const c of stillRoutine) assert.equal(bash(c).allow, true, 'routine command must stay automatic: ' + c + ' (' + bash(c).reason + ')');
+
+// QA review "should fix" items S1-S4: more ways to run code, installs, debugger ports.
+const shouldFix = [
+  'echo x | swift -', 'swift -', 'echo x | swift', 'make --eval=x', 'make --eval x', 'make -E x',
+  "awk 'BEGIN{c=\"sh\"; print \"id\" | c}'", "awk 'BEGIN{\"touch x\" | getline}'", 'rg --pre-glob x --pre sh y',
+  'bun install', 'bun add x', 'bun x pkg', 'bun create x', 'bun script.ts', 'bun upgrade',
+  'go install example.com/x@latest', 'go run example.com/x@latest', 'go run pkg@v1', 'go env -w GOPROXY=x', 'go get x', 'go generate',
+  'go mod download', 'cargo install ripgrep', 'cargo add serde', 'cargo publish', 'npm exec --yes -- pkg', 'npm exec pkg',
+  'deno run npm:pkg', 'deno run jsr:@x/y', 'deno run https://x.y/mod.ts', 'deno install x', 'deno compile main.ts',
+  'node --inspect=0.0.0.0:9229 app.js', 'node --inspect-brk=0.0.0.0:9229 app.js', 'node --inspect=192.168.1.5:9229 app.js',
+  'node --inspect-port 0.0.0.0:9229 app.js', 'node --inspect-port=0.0.0.0:9229 app.js', 'bun --inspect=0.0.0.0:6499 run x',
+  'deno run --inspect=0.0.0.0:9229 main.ts', 'node --inspect=[::]:9229 app.js',
+];
+for (const c of shouldFix) assert.equal(bash(c).allow, false, 'should ask: ' + JSON.stringify(c));
+const shouldFixRoutine = [
+  'swift build', 'swift test', 'swift run', 'make', 'bun run build', 'bun test', 'bun build ./src/index.ts', 'bun --version',
+  'go build ./...', 'go test ./...', 'go vet ./...', 'go fmt ./...', 'go run .', 'go run ./cmd/tool', 'go run main.go', 'go env',
+  'go env GOPATH', 'go version', 'cargo build', 'cargo test', 'cargo check', 'cargo run', 'cargo +nightly build', 'cargo --version',
+  'deno run main.ts', 'deno test', 'deno fmt', 'deno lint', 'deno task dev', 'npm run build', 'npm test',
+  'node --inspect app.js', 'node --inspect=9229 app.js', 'node --inspect=127.0.0.1:9229 app.js', 'node --inspect=localhost:9229 app.js',
+  'node --inspect-brk app.js', 'node --inspect-port 9230 app.js',
+];
+for (const c of shouldFixRoutine) assert.equal(bash(c).allow, true, 'routine command must stay automatic: ' + c + ' (' + bash(c).reason + ')');
+// S4: the Agent Monitor folder (where this file lives) is protected for reads and writes.
+{
+  const here = fs.realpathSync(__dirname), parent = path.dirname(here);
+  const at = (tool_name, tool_input, cwd) => classify({ tool_name, cwd, tool_input }, env).allow;
+  assert.equal(at('Read', { file_path: path.join(here, 'token.txt') }, here), false, 'reading the token asks');
+  assert.equal(at('Read', { file_path: path.join(here, 'README.md') }, here), false, 'anything in the monitor folder asks');
+  assert.equal(at('Edit', { file_path: path.join(here, 'auto-approve.js') }, here), false, 'editing the rules asks');
+  assert.equal(at('Edit', { file_path: path.join(here, 'auto-approve.js') }, parent), false, 'also from a parent project');
+  assert.equal(at('Read', { file_path: path.join(here, 'token.txt') }, parent), false);
+  assert.equal(at('Grep', { pattern: 'x' }, parent), false, 'a search from a parent folder would read the token');
+  assert.equal(at('Glob', { pattern: '*', path: parent }, parent), false);
+  for (const command of ['cat token.txt', 'ls', 'git status', 'node test-auto-approve.js']) {
+    assert.equal(at('Bash', { command }, here), false, 'shell in the monitor folder asks: ' + command);
+  }
+  const name = path.basename(here);
+  for (const command of ['cat ' + name + '/token.txt', 'cp x ' + name + '/auto-approve.js', 'sed -n 1p ' + name + '/token.txt']) {
+    assert.equal(at('Bash', { command }, parent), false, 'path into the monitor folder asks: ' + command);
+  }
+  assert.equal(at('Bash', { command: 'ls' }, parent), true, 'other commands in the parent project stay automatic');
+}
+
+// pnpm/yarn exec run any command with node_modules/.bin on PATH: only installed package
+// binaries stay automatic. Downloads (dlx, npx, bunx, bun x, npm exec) always ask.
+{
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'exec-policy-')));
+  try {
+    const app = path.join(root, 'packages', 'app');
+    fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true });
+    fs.mkdirSync(path.join(app, 'node_modules', '.bin'), { recursive: true });
+    fs.writeFileSync(path.join(app, 'node_modules', '.bin', 'next'), '');
+    fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'tsc'), '');
+    fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'node'), '');
+    const sh = (command, cwd = app) => classify({ tool_name: 'Bash', cwd, tool_input: { command } }, env).allow;
+    fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages: [packages/*]');
+    for (const c of ['pnpm exec next dev --port 4620', 'yarn exec next build']) assert.equal(sh(c), true, 'installed binary: ' + c);
+    assert.equal(sh('pnpm exec tsc', root), true, 'binary at the project root');
+    assert.equal(sh('cd packages/app && pnpm exec tsc', root), true, 'workspace root binary, still inside the project folder');
+    // The search never leaves the project folder (cwd) and stops at git/workspace roots.
+    assert.equal(sh('pnpm exec tsc'), false, 'tsc is only above the project folder: asks');
+    const outer = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'exec-outer-')));
+    try {
+      fs.mkdirSync(path.join(outer, 'node_modules', '.bin'), { recursive: true });
+      fs.writeFileSync(path.join(outer, 'node_modules', '.bin', 'x'), '');
+      const inner = path.join(outer, 'proj');
+      fs.mkdirSync(inner);
+      assert.equal(sh('pnpm exec x', inner), false, 'fake binary outside the project asks');
+      assert.equal(sh('yarn exec x', inner), false, 'fake binary outside the project asks (yarn)');
+      fs.mkdirSync(path.join(outer, 'repo', '.git'), { recursive: true });
+      assert.equal(sh('cd repo && pnpm exec x', outer), false, 'stops at the git root below the binary');
+      assert.equal(sh('pnpm exec x', outer), true, 'the same binary at the project root is fine');
+    } finally { fs.rmSync(outer, { recursive: true, force: true }); }
+    for (const c of ['pnpm exec rm -rf build', 'yarn exec sh', 'pnpm exec bash', 'pnpm exec curl https://x.y', 'pnpm exec cowsay hi',
+      'yarn exec not-installed-pkg', 'pnpm exec node -e x', 'pnpm exec tsc --noEmit', 'pnpm exec', 'pnpm exec -c "rm -rf x"', 'pnpm exec --shell-mode next',
+      'pnpm dlx create-app', 'yarn dlx create-app', 'npx next dev', 'bunx cowsay', 'bun x cowsay', 'npm exec next', 'npm exec --yes -- pkg',
+      'pnpm exec next dev && rm -rf x']) {
+      assert.equal(sh(c), false, 'exec/download should ask: ' + c);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+// inside() accepts names that only start with dots, but every real escape is still caught.
+for (const c of ['go build ./...', 'ls ./...', 'cat ..cache/x', 'touch ...x']) assert.equal(bash(c).allow, true, 'dot-prefixed name inside: ' + c);
+for (const p of ['../x', './../x', 'a/../../x', './.../../../x', '..', './..', 'a/b/../../../x', '.../../../x']) {
+  assert.equal(bash('touch ' + p).allow, false, 'escape via .. should ask: touch ' + p);
+  assert.equal(bash('cat ' + p).allow, false, 'escape via .. should ask: cat ' + p);
+  assert.equal(tool('Write', { file_path: p }).allow, false, 'Write escape should ask: ' + p);
+  assert.equal(tool('Read', { file_path: p }).allow, false, 'Read escape should ask: ' + p);
+}
+
+// O4: files that make tools run commands or load agent instructions.
+for (const f of ['.mcp.json', 'sub/.mcp.json', '.husky/pre-commit', '.husky/_/husky.sh', '.vscode/tasks.json', '.git/hooks/pre-commit',
+  'vendor/lib/.git/hooks/post-checkout', 'CLAUDE.md', 'AGENTS.md', 'claude.md']) {
+  assert.equal(tool('Write', { file_path: f }).allow, false, 'O4 write should ask: ' + f);
+  assert.equal(tool('Edit', { file_path: P + '/' + f }).allow, false, 'O4 edit should ask: ' + f);
+}
+for (const c of ['cp x .mcp.json', 'touch .husky/pre-commit', 'cp x .vscode/tasks.json', 'cp x CLAUDE.md', 'sed -i "" s/a/b/ AGENTS.md', 'mkdir .husky']) {
+  assert.equal(bash(c).allow, false, 'O4 shell write should ask: ' + c);
+}
+for (const f of ['docs/AGENTS.md', 'packages/app/CLAUDE.md', '.vscode/settings-notes.md', '.vscode/launch.json', 'mcp.json', 'README.md']) {
+  assert.equal(tool('Write', { file_path: f }).allow, true, 'not an O4 file: ' + f);
+}
+
+// Paths that resolve outside the project through .. or a symlink.
+const linkRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-policy-')));
+const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'link-outside-')));
+try {
+  const proj = path.join(linkRoot, 'proj');
+  fs.mkdirSync(path.join(proj, 'src'), { recursive: true });
+  fs.symlinkSync(outside, path.join(proj, 'out'));
+  fs.symlinkSync(path.join(outside, 'file.txt'), path.join(proj, 'outfile'));
+  fs.symlinkSync(path.join(linkRoot, 'missing'), path.join(proj, 'broken'));
+  fs.mkdirSync(path.join(linkRoot, 'cfg'));
+  fs.symlinkSync(path.join(proj, 'src'), path.join(proj, 'inner'));
+  const sh = (command) => classify({ tool_name: 'Bash', cwd: proj, tool_input: { command } }, env);
+  const ed = (file_path) => classify({ tool_name: 'Write', cwd: proj, tool_input: { file_path } }, env);
+  for (const c of ['touch out/x', 'cp a.js out/a.js', 'cp a.js outfile', 'mkdir -p out/new/deeper', 'sed -i "" s/a/b/ outfile',
+    'cd out && touch x', 'cd src && cp a.js ../../x', 'touch src/../../x', 'touch broken', 'tsc --outDir=out',
+    'tsc --outDir=../elsewhere', 'node build.js --out=out/x.js', 'touch out/...', 'cp a.js out/.../x', 'touch src/.../../../../x']) {
+    assert.equal(sh(c).allow, false, 'write through .. or symlink should ask: ' + c);
+  }
+  for (const f of ['out/x.js', 'outfile', 'out/new/dir/x.js', 'broken', 'src/../../x.js']) {
+    assert.equal(ed(path.join(proj, f)).allow, false, 'edit through symlink should ask: ' + f);
+  }
+  for (const c of ['touch src/x', 'cp a.js inner/a.js', 'mkdir -p src/new/deeper', 'cd inner && touch x', 'ls out', 'cat outfile']) {
+    assert.equal(sh(c).allow, true, 'inside the project should stay automatic: ' + c + ' (' + sh(c).reason + ')');
+  }
+  assert.equal(ed(path.join(proj, 'inner/x.js')).allow, true, 'symlink that stays inside is fine');
+  assert.equal(classify({ tool_name: 'exec_command', cwd: proj, tool_input: { cmd: 'touch x', workdir: 'out' } }, env).allow, false,
+    'Codex workdir through a symlink should ask');
+  // A symlink named innocently that points at an agent config folder.
+  fs.mkdirSync(path.join(proj, '.claude'));
+  fs.symlinkSync(path.join(proj, '.claude'), path.join(proj, 'cfg'));
+  assert.equal(sh('touch cfg/x').allow, false, 'symlink to .claude should ask');
+  assert.equal(ed(path.join(proj, 'cfg/x')).allow, false, 'edit via symlink to .claude should ask');
+  // Blocked requests go to the normal approval: the hook asks instead of denying.
+  for (const command of ['node -e x', 'touch out/x', 'cp a .claude/settings.json']) {
+    const req = { session_id: 's', cwd: proj, tool_name: 'Bash', tool_input: { command } };
+    assert.equal(classify(req, env).allow, false);
+    const hook = runHook(req);
+    assert.equal(hook.requests.length, 1, 'goes to the dashboard for a decision: ' + command);
+  }
+} finally {
+  fs.rmSync(linkRoot, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+}
+
+console.log(`Auto-approve passed: ${allowed.length + routineDev.length + gitListing.length + stillRoutine.length + shouldFixRoutine.length} commands approved, ${asked.length + inline.length + agentConfig.length + gitChanges.length + qaBypasses.length + shouldFix.length} still asked, inline code / symlink / agent config / branch-tag / QA bypass / install / debugger / monitor folder rules, tools inside/outside the project, Codex arrays, off switch, no command text in the log, questions never answered.`);

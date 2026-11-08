@@ -8,6 +8,11 @@
 //     and every path stays inside the project folder
 // Also allowed: exact git pull --ff-only, and ls-remote queries to origin/upstream.
 // Pull updates local files and may run configured Git hooks; it is not read-only.
+// Also allowed: a project component.tgz sent to the official MagicPath archive endpoint.
+// Never auto-approved, even inside the project: interpreters running code given on the
+// command line or piped in (node -e, python -c, ...), writes that resolve outside the
+// project through .. or a symlink, and writes to agent permission files (.claude/,
+// .codex/, settings*.json, hooks.json). These go to the normal approval, not a denial.
 // Always asked: deleting, other network access, git push / history rewrites, sudo, installs,
 // writing outside the project, shell redirection or substitution, unknown MCP and web tools.
 // Known Chrome DevTools observation tools below may run without asking, but saving
@@ -20,6 +25,7 @@
 // Turn auto-approval off with AUTO_APPROVE=off in the agent's environment.
 
 const path = require('path');
+const fs = require('fs');
 
 const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -47,7 +53,7 @@ const DEV_COMMANDS = ['node', 'python', 'python3', 'pytest', 'tsc', 'eslint', 'p
   'cp', 'mv', 'sed', 'awk', 'make', 'deno', 'bun', 'swift', 'swiftc', 'ruby', 'go', 'cargo', 'xcodebuild'];
 const GIT_READ = new Set(['status', 'diff', 'log', 'show', 'branch', 'rev-parse', 'ls-files', 'blame', 'shortlog', 'describe', 'tag', 'remote', 'config']);
 const GIT_DEV = new Set(['add', 'commit', 'switch', 'restore', 'stash', 'checkout', 'mv', 'worktree']);
-const NPM_DEV = new Set(['test', 't', 'run', 'run-script', 'start', 'exec', 'ls', 'list', 'outdated', 'view', 'pack', 'build']);
+const NPM_DEV = new Set(['test', 't', 'run', 'run-script', 'start', 'ls', 'list', 'outdated', 'view', 'pack', 'build']);
 
 // Things that are never approved automatically, wherever they appear in a command part.
 const NEVER = [/(^|\s)--force(-with-lease)?(\s|=|$)/]; // force flags are worth a look
@@ -89,26 +95,30 @@ function words(segment) {
   return out;
 }
 
-// Split on &&, ||, ; and | outside quotes.
+// Split on &&, ||, ; and | outside quotes. Each part is { text, piped }: piped means the
+// part reads the previous part's output on stdin (a single |).
 function segments(cmd) {
   const parts = [];
-  let cur = '', quote = null;
+  let cur = '', quote = null, piped = false;
+  const push = (next) => { parts.push({ text: cur.trim(), piped }); cur = ''; piped = next; };
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
     if (quote) { if (c === quote) quote = null; cur += c; continue; }
     if (c === "'" || c === '"') { quote = c; cur += c; continue; }
-    if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) { parts.push(cur); cur = ''; i++; continue; }
-    if (c === ';' || c === '|') { parts.push(cur); cur = ''; continue; }
+    if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) { push(false); i++; continue; }
+    if (c === ';') { push(false); continue; }
+    if (c === '|') { push(true); continue; }
     cur += c;
   }
   if (quote) return null;
-  parts.push(cur);
-  return parts.map((p) => p.trim()).filter(Boolean);
+  push(false);
+  return parts.filter((p) => p.text);
 }
 
 function inside(base, p) {
   const rel = path.relative(base, path.resolve(base, p));
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  // '..' or '../x' leaves; a name that merely starts with dots ('...', '..cache') does not.
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
 }
 // Paths inside .git can run code (hooks) or rewrite history: ask.
 function protectedPath(base, p) {
@@ -116,9 +126,275 @@ function protectedPath(base, p) {
   return rel[0] === '.git';
 }
 
+// Resolve symlinks in the longest existing part of an absolute path and append the rest
+// (path.resolve has already removed any ..). null when it cannot be resolved with
+// confidence: a broken symlink, a loop, or no permission to look.
+function realish(p) {
+  let head = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync(head), ...tail); } catch (err) {
+      // Too long or under a regular file: no such path can exist, so nothing to follow.
+      if (err.code === 'ENOENT') {
+        try { fs.lstatSync(head); return null; } catch (_) { /* really missing: look at the parent */ }
+      } else if (err.code !== 'ENAMETOOLONG' && err.code !== 'ENOTDIR') return null;
+      const parent = path.dirname(head);
+      if (parent === head) return null;
+      tail.unshift(path.basename(head));
+      head = parent;
+    }
+  }
+}
+// Inside the project after following symlinks, for paths that may be written.
+function realInside(root, p) {
+  const r = realish(root), t = realish(path.resolve(root, p));
+  return !!r && !!t && inside(r, t);
+}
+// Agent permission and hook files: changing them changes what runs without asking.
+// Checked as written and after symlinks; case-insensitive like the default macOS disk.
+const AGENT_CONFIG_DIRS = new Set(['.claude', '.codex']);
+// Also files that make tools run commands or load instructions: .mcp.json, .husky/*,
+// .vscode/tasks.json, .git/hooks/*, and CLAUDE.md / AGENTS.md at the project root.
+function agentConfigName(full, root) {
+  const parts = full.toLowerCase().split(path.sep), name = parts[parts.length - 1];
+  if (parts.some((x) => AGENT_CONFIG_DIRS.has(x)) || /^settings.*\.json$/.test(name) || name === 'hooks.json') return true;
+  if (name === '.mcp.json' || parts.includes('.husky')) return true;
+  if (name === 'tasks.json' && parts[parts.length - 2] === '.vscode') return true;
+  if (parts.some((x, i) => x === '.git' && parts[i + 1] === 'hooks')) return true;
+  if ((name === 'claude.md' || name === 'agents.md') && root && path.dirname(full).toLowerCase() === root.toLowerCase()) return true;
+  return false;
+}
+function agentConfigPath(base, p, root) {
+  const full = path.resolve(base, p), real = realish(full), realRoot = root && realish(root);
+  return agentConfigName(full, root && path.resolve(root)) || (!!real && agentConfigName(real, realRoot));
+}
+
+// Interpreters given code on the command line, or on stdin from a pipe, run code nobody
+// can review in a file. Running a script file stays a development command.
+// Options listed here take the next word as their value.
+const INTERPRETER_VALUE_OPTIONS = {
+  node: ['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--env-file',
+    '--input-type', '--watch-path', '--test-name-pattern', '--test-reporter', '--test-reporter-destination',
+    '--test-shard', '--disable-warning', '--redirect-warnings', '--title', '--inspect-port'],
+  bun: ['-r', '--preload', '--cwd', '--env-file', '--config', '-c'],
+};
+function inlineCode(argv, piped) {
+  const [cmd, ...args] = argv;
+  let script = null;
+  if (cmd === 'node' || cmd === 'bun') {
+    const takesValue = new Set(INTERPRETER_VALUE_OPTIONS[cmd]);
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === '--') { script = args[i + 1] ?? null; break; }
+      if (!a.startsWith('-') || a === '-') { script = a; break; }
+      if (/^-[a-z]*[ep][a-z]*$/.test(a) && a.length <= 3) return true; // -e -p -pe -ep
+      if (/^--(eval|print)(=|$)/.test(a)) return true;
+      if (takesValue.has(a)) i++;
+    }
+  } else if (cmd === 'python' || cmd === 'python3' || cmd === 'ruby') {
+    // Short options cluster (-Bc); after a value option the rest of the word is its value.
+    const code = cmd === 'ruby' ? 'e' : 'c', stop = cmd === 'ruby' ? '' : 'm';
+    const valueChars = cmd === 'ruby' ? 'rICEFTx0' : 'WX';
+    outer: for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === '--') { script = args[i + 1] ?? null; break; }
+      if (!a.startsWith('-') || a === '-') { script = a; break; }
+      if (a.startsWith('--')) continue;
+      for (let j = 1; j < a.length; j++) {
+        if (a[j] === code) return true;
+        if (stop && a[j] === stop) { script = 'module'; break outer; }
+        if (valueChars.includes(a[j])) { if (j === a.length - 1) i++; break; }
+      }
+    }
+  } else if (cmd === 'deno') {
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (sub === 'eval' || sub === 'repl') return true;
+    if (sub !== 'run') return false;
+    script = args.slice(args.indexOf('run') + 1).find((a) => !a.startsWith('-') || a === '-') ?? null;
+  } else if (cmd === 'swift' || cmd === 'swiftc') {
+    script = args.find((a) => !a.startsWith('-') || a === '-') ?? null;
+  } else return false;
+  // `node -` or a pipe into an interpreter with no script file runs whatever arrives on stdin.
+  return script === '-' || (piped && script === null);
+}
+
+// sed scripts: w/W write files, e runs commands, r/R read any file, s///w and s///e too.
+// Parses each script; anything it cannot read with confidence asks.
+function sedScriptSafe(script) {
+  let i = 0;
+  const n = script.length;
+  const skipRegex = (d) => { // after an opening delimiter d; returns false if unterminated
+    for (i++; i < n; i++) { if (script[i] === '\\') { i++; continue; } if (script[i] === d) return true; if (script[i] === '\n') return false; }
+    return false;
+  };
+  while (i < n) {
+    const c = script[i];
+    if (/[\s;!{}]/.test(c)) { i++; continue; }
+    if (/[0-9$,~+IM]/.test(c)) { i++; continue; } // addresses and regex address flags
+    if (c === '/') { if (!skipRegex('/')) return false; i++; continue; }
+    if (c === '\\') { i++; if (i >= n || !skipRegex(script[i])) return false; i++; continue; }
+    if (c === 's' || c === 'y') {
+      i++;
+      const d = script[i];
+      if (!d || /[\s\\\n]/.test(d)) return false;
+      i--; // skipRegex starts after the delimiter position
+      i++; if (!skipRegex(d)) return false; // pattern
+      if (!skipRegex(d)) return false; // replacement
+      i++;
+      if (c === 's') {
+        const flags = /^[gpiImMe0-9w]*/.exec(script.slice(i))[0];
+        if (/[we]/.test(flags)) return false;
+        i += flags.length;
+      }
+      continue;
+    }
+    if ('wWerR'.includes(c)) return false;
+    if ('aic'.includes(c)) { while (i < n && script[i] !== '\n') i++; continue; } // text to end of line
+    if ('btT:'.includes(c)) { i++; while (i < n && !/[;\n}]/.test(script[i])) i++; continue; } // labels
+    if (/[pPdDnNgGhHxlq=zF#]/.test(c)) { if (c === '#') { while (i < n && script[i] !== '\n') i++; } else i++; continue; }
+    if (c === 'Q' || c === 'L') { i++; continue; }
+    return false;
+  }
+  return true;
+}
+function sedScriptsSafe(args) {
+  const scripts = [];
+  let first = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-f' || a.startsWith('--file') || /^-[a-zA-Z]*f/.test(a) && !a.startsWith('--')) return false; // script from a file
+    if (a === '-e' || a === '--expression') { scripts.push(args[++i] ?? ''); continue; }
+    if (a.startsWith('--expression=')) { scripts.push(a.slice(13)); continue; }
+    if (/^-[a-zA-Z]*e./.test(a) && !a.startsWith('--')) { scripts.push(a.slice(a.indexOf('e') + 1)); continue; }
+    if (a === '-i' && (args[i + 1] === '' || /^\./.test(args[i + 1] || ''))) { i++; continue; } // BSD -i '' / -i .bak
+    if (a.startsWith('-')) continue;
+    if (first === null) first = a;
+  }
+  if (!scripts.length && first !== null) scripts.push(first);
+  return scripts.every(sedScriptSafe);
+}
+
+// python -m <module>, also after other options (-I -m pip) or attached (-mpip).
+function pythonModule(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--' || !a.startsWith('-') || a === '-') return null;
+    if (a.startsWith('--')) continue;
+    for (let j = 1; j < a.length; j++) {
+      if (a[j] === 'm') return j === a.length - 1 ? (args[i + 1] ?? null) : a.slice(j + 1);
+      if ('WX'.includes(a[j])) { if (j === a.length - 1) i++; break; }
+      if (a[j] === 'c') return null;
+    }
+  }
+  return null;
+}
+
+// git checkout: only switching or creating branches. Force, patch/ours/theirs/merge,
+// pathspecs (--, ., or a name that exists as a file or folder) throw away changes.
+function gitCheckoutSafe(rest, base) {
+  const positional = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '-b' || a === '--track' || a === '-t') { if (a === '-b') i++; continue; }
+    if (a === '--detach' || a === '-q' || a === '--quiet' || a === '--no-track') continue;
+    if (a.startsWith('-')) return false; // -f, --force, -B, -p, --ours, --theirs, -m, --merge, --discard-changes, --
+    positional.push(a);
+  }
+  if (positional.length > 1) return false;
+  if (positional.length === 1) {
+    const p = positional[0];
+    if (p === '.' || p.startsWith(':')) return false;
+    try { fs.lstatSync(path.resolve(base || '/', p)); return false; } catch (_) { /* not a path: a branch or commit */ }
+  }
+  return true;
+}
+// git restore only touching the index (--staged without --worktree) keeps working files.
+function gitRestoreIndexOnly(rest) {
+  const staged = rest.includes('--staged'); // as before; -S is not added here
+  const worktree = rest.some((a) => a === '--worktree' || /^-[a-zA-Z]*W/.test(a) && !a.startsWith('--'));
+  return staged && !worktree;
+}
+
+// A debugger port lets whoever reaches it run code. Only loopback addresses.
+function inspectSafe(argv) {
+  if (!['node', 'bun', 'deno'].includes(argv[0])) return true;
+  const ok = (v) => /^\d+$/.test(v) || /^(127\.0\.0\.1|localhost):\d+$/i.test(v);
+  for (let i = 1; i < argv.length; i++) {
+    const m = /^--inspect(-brk|-wait|-port|-publish-uid)?(=(.*))?$/.exec(argv[i]);
+    if (!m) continue;
+    if (m[2] !== undefined) { if (m[1] !== '-publish-uid' && !ok(m[3])) return false; continue; }
+    if (m[1] === '-port') { if (!ok(argv[i + 1] || '')) return false; i++; }
+  }
+  return true;
+}
+
+// The Agent Monitor folder itself (this file, approve.js, token.txt, logs): reading the
+// token lets a script answer approvals; editing the rules changes what is approved.
+const MONITOR_DIR = realish(__dirname);
+function inMonitorDir(p) {
+  const r = realish(p);
+  return !!MONITOR_DIR && !!r && inside(MONITOR_DIR, r); // unresolvable: nothing to read there
+}
+// p contains the monitor folder (a recursive search from here would read it).
+function containsMonitorDir(p) {
+  const r = realish(p);
+  return !!MONITOR_DIR && !!r && inside(r, MONITOR_DIR);
+}
+
 function sedInPlaceOrExec(args) { return args.some((a) => /^-[a-zA-Z]*i/.test(a) || /^--in-place/.test(a)) ? 'dev' : 'read'; }
 
-function commandKind(argv) {
+// git branch / git tag in a listing form only: query options, and names only as
+// --list patterns or as the value of a query option such as --contains.
+const GIT_LIST_FLAGS = {
+  branch: new Set(['-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--show-current', '-l', '--list',
+    '-i', '--ignore-case', '--color', '--no-color', '--column', '--no-column', '--omit-empty']),
+  tag: new Set(['-l', '--list', '-n', '-i', '--ignore-case', '--color', '--no-color', '--column', '--no-column', '--omit-empty']),
+};
+const GIT_LIST_VALUE_FLAGS = new Set(['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format', '--abbrev']);
+function gitListOnly(sub, rest) {
+  const flags = GIT_LIST_FLAGS[sub];
+  const listing = rest.some((a) => a === '-l' || a === '--list' || (sub === 'branch' && /^-[arv]*l[arv]*$/.test(a)));
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--') return false;
+    if (flags.has(a)) continue;
+    if (sub === 'branch' && /^-[arvl]+$/.test(a)) continue; // -av, -vv, -ra
+    if (sub === 'tag' && /^-n\d+$/.test(a)) continue;
+    const name = a.split('=')[0];
+    if (GIT_LIST_VALUE_FLAGS.has(name)) {
+      // Value is optional for --contains/--merged; a following word is taken as the commit.
+      if (!a.includes('=') && rest[i + 1] !== undefined && !rest[i + 1].startsWith('-')) i++;
+      continue;
+    }
+    if (a.startsWith('-')) return false; // -d, -D, --delete, -m, --move, -c, --copy, -f, -u, -a (tag), ...
+    if (!listing) return false; // a name without --list creates a branch or tag
+  }
+  return true;
+}
+
+// pnpm/yarn exec <bin>: <bin> must be an installed package binary in node_modules/.bin of
+// this folder or a parent inside the project, never a system program like rm or sh.
+// The search stops at the first git or workspace root and never leaves the project
+// folder, so ~/node_modules/.bin and the like are never trusted.
+function isPackageRoot(dir) {
+  if (fs.existsSync(path.join(dir, '.git')) || fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) return true;
+  try { return !!JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).workspaces; } catch (_) { return false; }
+}
+function installedBin(args, base, root) {
+  const at = args.indexOf('exec');
+  const rest = args.slice(at + 1);
+  if (!rest.length || rest[0].startsWith('-') || !/^[A-Za-z0-9@][A-Za-z0-9._@-]*$/.test(rest[0])) return false;
+  if (/^(node|nodejs|bun|deno|python3?|ruby|perl|swift|sh|bash|zsh|env)$/.test(rest[0])) return false; // interpreters/shells
+  if (!root || !base) return false;
+  const top = path.resolve(root);
+  for (let dir = path.resolve(base); inside(top, dir); dir = path.dirname(dir)) {
+    try { if (fs.statSync(path.join(dir, 'node_modules', '.bin', rest[0])).isFile()) return true; } catch (_) {}
+    if (dir === top || isPackageRoot(dir) || path.dirname(dir) === dir) break;
+  }
+  return false;
+}
+
+function commandKind(argv, base, root) {
   const [cmd, ...args] = argv;
   if (cmd === 'git') {
     const at = args.findIndex((a) => !a.startsWith('-')), sub = args[at], global = at < 0 ? args : args.slice(0, at);
@@ -139,12 +415,16 @@ function commandKind(argv) {
       if (!['origin', 'upstream'].includes(rest[i++])) return null;
       return rest.slice(i).every((ref) => /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(ref) && !ref.includes('..')) ? 'read' : null;
     }
-    if (sub === 'branch' && args.some((a) => /^-[a-zA-Z]*[dDmM]/.test(a))) return null; // delete/rename branches
-    if (sub === 'tag' && args.some((a) => /^-[a-zA-Z]*d/.test(a))) return null;
+    // branch and tag create, delete, rename and copy too, also with long options
+    // (--delete, --move, --copy, ...). Only listing forms are read-only; anything else asks.
+    if ((sub === 'branch' || sub === 'tag') && !gitListOnly(sub, rest)) return null;
     if (sub === 'remote' && args.some((a) => ['add', 'remove', 'rm', 'set-url', 'rename'].includes(a))) return null;
     if (sub === 'config' && !args.some((a) => ['--get', '--list', '-l', '--get-all'].includes(a))) return null;
-    if (sub === 'checkout' && args.some((a) => a === '--' || a === '.')) return null; // discards local changes
-    if (sub === 'restore' && !args.includes('--staged')) return null; // discards local changes
+    // Anything that can throw away uncommitted work asks.
+    if (sub === 'checkout' && !gitCheckoutSafe(rest, base)) return null;
+    if (sub === 'switch' && rest.some((a) => /^(-f|--force|--discard-changes|-C|--force-create|--merge|-m)$/.test(a) || /^-[a-zA-Z]*[fCm]/.test(a) && !a.startsWith('--'))) return null;
+    if (sub === 'restore' && !gitRestoreIndexOnly(rest)) return null;
+    if (sub === 'mv' && rest.some((a) => a === '-f' || a === '--force' || /^-[a-zA-Z]*f/.test(a) && !a.startsWith('--'))) return null;
     if (sub === 'stash' && args.some((a) => ['drop', 'clear', 'pop'].includes(a))) return null;
     if (sub === 'worktree' && args.some((a) => ['remove', 'prune'].includes(a))) return null;
     if (sub === 'commit' && args.some((a) => a === '--amend')) return null;
@@ -152,17 +432,60 @@ function commandKind(argv) {
     if (GIT_DEV.has(sub)) return 'dev';
     return null; // push, fetch, clone, reset, clean, rebase, merge, ...
   }
+  // Installs and remote code: only the listed subcommands run without asking.
+  if (cmd === 'bun') {
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (sub === undefined) return args.every((a) => ['--version', '-v', '--help', '-h'].includes(a)) ? 'read' : null;
+    return ['run', 'test', 'build'].includes(sub) ? 'dev' : null; // install, add, x, create, upgrade, ...
+  }
+  if (cmd === 'go') {
+    const at = args.findIndex((a) => !a.startsWith('-')), sub = args[at], rest = args.slice(at + 1);
+    if (['build', 'test', 'vet', 'fmt'].includes(sub)) return 'dev';
+    if (sub === 'version') return 'read';
+    if (sub === 'env') return rest.some((a) => /^-(w|u)$/.test(a)) ? null : 'read'; // go env -w writes global config
+    if (sub === 'run') {
+      // Only local files or packages; pkg@version downloads and runs remote code.
+      const targets = rest.filter((a) => !a.startsWith('-'));
+      return targets.length && targets.every((a) => !a.includes('@') && (/^\.\.?(\/|$)/.test(a) || a.startsWith('/') || a.endsWith('.go'))) ? 'dev' : null;
+    }
+    return null; // install, get, generate, mod, work, ...
+  }
+  if (cmd === 'cargo') {
+    const sub = args.find((a) => !a.startsWith('-') && !a.startsWith('+'));
+    if (sub === undefined) return args.every((a) => ['--version', '-V', '--help', '-h'].includes(a)) ? 'read' : null;
+    return ['build', 'test', 'check', 'run'].includes(sub) ? 'dev' : null; // install, add, publish, ...
+  }
+  if (cmd === 'deno') {
+    const sub = args.find((a) => !a.startsWith('-'));
+    if (!['run', 'test', 'check', 'fmt', 'lint', 'task'].includes(sub)) return null; // install, add, compile, upgrade, ...
+    if (args.some((a) => /^(npm|jsr|https?):/i.test(a))) return null; // remote code
+    return 'dev';
+  }
+  if (cmd === 'make' && args.some((a) => /^(--eval(=|$)|-E)/.test(a))) return null; // --eval runs make code from the command line
   if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') {
     const sub = args.find((a) => !a.startsWith('-'));
     if (cmd === 'yarn' && sub === undefined) return null; // bare `yarn` installs
+    // npm exec can download and run any package. pnpm/yarn exec run ANY command with
+    // node_modules/.bin on PATH, so only a program installed there (no options) is automatic.
+    if (sub === 'exec' && cmd !== 'npm') return installedBin(args, base, root) ? 'dev' : null;
     return NPM_DEV.has(sub) ? 'dev' : null; // install, ci, publish, add, update, ...
   }
   if (cmd === 'find') return args.some((a) => ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'].includes(a)) ? null : 'read';
-  if (cmd === 'sed') return sedInPlaceOrExec(args);
-  if (cmd === 'awk' && args.some((a) => /system\s*\(|print\s*>|\|\s*"/.test(a))) return null;
+  if (cmd === 'sed') return sedScriptsSafe(args) ? sedInPlaceOrExec(args) : null;
+  // awk can run commands (system, pipes, getline) and write files (print > f).
+  if (cmd === 'awk' && args.some((a) => /system\s*\(|getline|>|\|/.test(a))) return null;
   if (cmd === 'python' || cmd === 'python3') {
-    if (args[0] === '-m' && ['pip', 'http.server', 'venv', 'ensurepip'].includes(args[1])) return null;
+    if (['pip', 'pip3', 'http.server', 'venv', 'ensurepip'].includes(pythonModule(args))) return null;
   }
+  // Output options make read-only tools write files; treat them as development commands
+  // so the written path gets the full project/symlink checks.
+  if (cmd === 'sort' && args.some((a) => /^(-[a-zA-Z]*o|--output)/.test(a))) return 'dev';
+  if (cmd === 'uniq' && args.filter((a) => !a.startsWith('-')).length >= 2) return 'dev';
+  if (cmd === 'tree' && args.some((a) => /^-[a-zA-Z]*o/.test(a))) return 'dev';
+  // ripgrep --pre runs any program on every searched file.
+  if (cmd === 'rg' && args.some((a) => /^--pre(=|$)/.test(a))) return null;
+  // make -f - reads the makefile (that is, commands) from stdin.
+  if (cmd === 'make' && args.some((a, i) => /^(-f|--file|--makefile)$/.test(a) && args[i + 1] === '-' || /^(-f-|--(file|makefile)=-)$/.test(a))) return null;
   if (cmd === 'tail' && args.some((a) => a === '-f' || a === '-F')) return null; // never ends
   if (READ_COMMANDS.includes(cmd)) return 'read';
   if (DEV_COMMANDS.includes(cmd)) return 'dev';
@@ -191,14 +514,42 @@ function shellScript(input) {
   return null;
 }
 
+// Requested preview install includes dependency lifecycle scripts. This assumes
+// trusted project/npm configuration; classification is not a runtime sandbox.
+function previewInstall(script, cwd) {
+  const expected = ['npm', 'install', '--prefix', 'work/local-preview', 'react', 'react-dom', 'esbuild', '--no-audit', '--no-fund'];
+  const argv = words(script);
+  if (!argv || argv.length !== expected.length || argv.some((arg, i) => arg !== expected[i])) return false;
+  try {
+    const root = fs.realpathSync(cwd);
+    let candidate = path.join(cwd, 'work', 'local-preview');
+    for (;;) {
+      let stat;
+      try { stat = fs.lstatSync(candidate); }
+      catch (err) {
+        if (err.code !== 'ENOENT' || candidate === cwd) return false;
+        candidate = path.dirname(candidate);
+        continue;
+      }
+      // A broken or outward-pointing symlink must not become an auto-approved
+      // destination. Missing descendants may be created under a verified parent.
+      const real = fs.realpathSync(candidate);
+      return fs.statSync(real).isDirectory() && inside(root, real);
+    }
+  } catch (_) { return false; }
+}
+
 function classifyShell(script, cwd) {
   if (typeof script !== 'string' || !script.trim() || script.length > 2000) return { allow: false, reason: 'no readable command' };
   const bad = unsafeSyntax(script);
   if (bad) return { allow: false, reason: bad };
   const parts = segments(script);
   if (!parts || !parts.length) return { allow: false, reason: 'unreadable command' };
+  if (parts.length === 1 && previewInstall(script, cwd)) {
+    return { allow: true, rule: 'local React preview dependencies (scripts allowed)' };
+  }
   let base = cwd, kind = 'read';
-  for (const part of parts) {
+  for (const { text: part, piped } of parts) {
     if (NEVER.some((re) => re.test(part))) return { allow: false, reason: 'force flag' };
     const argv = words(part);
     if (!argv || !argv.length) return { allow: false, reason: 'variables, globs or escapes' };
@@ -207,13 +558,61 @@ function classifyShell(script, cwd) {
       argv.shift();
     }
     if (!argv.length) return { allow: false, reason: 'variable assignment only' };
-    const k = commandKind(argv);
+    let commandBase = base;
+    if (argv[0] === 'git') {
+      // Normalize only supported global directory/pager options, then apply the
+      // same command rules. -C changes Git's cwd, not subsequent shell commands.
+      let i = 1;
+      while (i < argv.length) {
+        if (argv[i] === '--no-pager') { i++; continue; }
+        if (argv[i] !== '-C') break;
+        const target = argv[i + 1];
+        if (typeof target !== 'string' || !target || target.startsWith('-')) return { allow: false, reason: 'invalid git directory' };
+        const resolved = path.resolve(commandBase, target);
+        if (!inside(cwd, resolved) || protectedPath(cwd, resolved) || resolved.split(path.sep).includes('.git')) return { allow: false, reason: 'git directory outside the project' };
+        try {
+          const realRoot = fs.realpathSync(cwd), realTarget = fs.realpathSync(resolved);
+          if (!fs.statSync(realTarget).isDirectory() || !inside(realRoot, realTarget) || realTarget.split(path.sep).includes('.git')) return { allow: false, reason: 'git directory outside the project' };
+        } catch (_) { return { allow: false, reason: 'unverified git directory' }; }
+        commandBase = resolved;
+        argv.splice(i, 2);
+      }
+    }
+    if (argv[0] === 'cd' && (argv.length < 2 || argv[1] === '-' || argv[1] === '--')) return { allow: false, reason: 'cd leaves the project' };
+    const k = commandKind(argv, commandBase, cwd);
     if (!k) return { allow: false, reason: `${argv[0]} needs your decision` };
-    if (!pathsInside(argv, base)) return { allow: false, reason: 'path outside the project' };
+    if (inlineCode(argv, piped)) return { allow: false, reason: 'runs inline code' };
+    if (!inspectSafe(argv)) return { allow: false, reason: 'debugger open beyond this Mac' };
+    if (inMonitorDir(commandBase) || argv.slice(1).some((a) => !a.startsWith('-') && inMonitorDir(path.resolve(commandBase, a)))) {
+      return { allow: false, reason: 'Agent Monitor folder' };
+    }
+    if (!pathsInside(argv, commandBase)) return { allow: false, reason: 'path outside the project' };
+    if (k === 'dev') {
+      // A development command may write any file it names, also as --flag=value.
+      // Follow symlinks and keep agent permission files out of reach.
+      if (!realInside(cwd, commandBase)) return { allow: false, reason: 'folder outside the project' };
+      for (const a of argv.slice(1)) {
+        // --flag=value, or a short option with an attached path (-o/abs/file).
+        const value = !a.startsWith('-') ? a
+          : ((/^--?[^=]+=(.+)$/.exec(a) || [])[1] ?? (/^-[a-zA-Z](.*\/.*)$/.exec(a) || [])[1]);
+        if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) continue;
+        if (a.startsWith('-') && !inside(commandBase, value)) return { allow: false, reason: 'path outside the project' };
+        if (!realInside(cwd, path.resolve(commandBase, value))) return { allow: false, reason: 'path outside the project' };
+        if (agentConfigPath(commandBase, value, cwd)) return { allow: false, reason: 'agent settings or hooks' };
+      }
+    }
     if (argv[0] === 'cd') base = path.resolve(base, argv[1] || base);
     if (k === 'dev') kind = 'dev';
   }
   return { allow: true, rule: kind === 'read' ? 'read-only command' : 'development command' };
+}
+
+function magicPathUpload(command, cwd, workdir) {
+  // Match the literal command generated by MagicPath, including its destination.
+  const upload = /^curl -fsS -X PUT --data-binary @component\.tgz (['"]?)https:\/\/api\.magicpath\.ai\/mcp\/transfers\/mcs_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/[A-Za-z0-9_-]+\/archive\1$/;
+  if (command.length > 2000 || /[\r\n]/.test(command) || !upload.test(command)) return false;
+  const archive = path.join(workdir, 'component.tgz');
+  return inside(fs.realpathSync(cwd), fs.realpathSync(archive)) && fs.lstatSync(archive).isFile();
 }
 
 function classify(p, env = process.env) {
@@ -265,8 +664,11 @@ function classify(p, env = process.env) {
     // Filesystem and shell permissions still require a bounded project folder.
     if (!cwd || cwd === '/' || cwd === path.resolve(require('os').homedir())) return { allow: false, reason: 'no project folder' };
 
+    if (inMonitorDir(cwd)) return { allow: false, reason: 'Agent Monitor folder' };
     if (READ_TOOLS.has(tool)) {
       const target = input.file_path || input.notebook_path || input.path;
+      const where = typeof target === 'string' ? path.resolve(cwd, target) : cwd;
+      if (inMonitorDir(where) || containsMonitorDir(where)) return { allow: false, reason: 'Agent Monitor folder' };
       if (typeof target === 'string' && !inside(cwd, target)) return { allow: false, reason: 'path outside the project' };
       return { allow: true, rule: 'read-only tool' };
     }
@@ -274,11 +676,27 @@ function classify(p, env = process.env) {
       const target = input.file_path || input.notebook_path;
       if (typeof target !== 'string' || !target) return { allow: false, reason: 'no file path' };
       if (!inside(cwd, target) || protectedPath(cwd, target)) return { allow: false, reason: 'path outside the project' };
+      if (!realInside(cwd, target)) return { allow: false, reason: 'path outside the project' };
+      if (agentConfigPath(cwd, target, cwd)) return { allow: false, reason: 'agent settings or hooks' };
+      if (inMonitorDir(path.resolve(cwd, target))) return { allow: false, reason: 'Agent Monitor folder' };
       return { allow: true, rule: 'edit inside project' };
     }
     if (SHELL_TOOLS.has(tool)) {
       const workdir = typeof input.workdir === 'string' ? path.resolve(cwd, input.workdir) : cwd;
-      if (!inside(cwd, workdir)) return { allow: false, reason: 'path outside the project' };
+      if (!inside(cwd, workdir) || !realInside(cwd, workdir)) return { allow: false, reason: 'path outside the project' };
+      // Local, destination-scoped reporting exception. Inspect original strings
+      // only; shellScript's array conversion is not a security parser.
+      const original = input.command ?? input.cmd;
+      if (typeof original === 'string') {
+        if (magicPathUpload(original, cwd, workdir)) {
+          return { allow: true, rule: 'MagicPath component archive upload' };
+        }
+        try {
+          if (require('./buzz-auto-approve').allowConfiguredBuzzSend(original, workdir)) {
+            return { allow: true, rule: 'approved Buzz project report' };
+          }
+        } catch (_) { /* Missing policy/module keeps normal approval behavior. */ }
+      }
       return classifyShell(shellScript(input), workdir);
     }
     return { allow: false, reason: `${tool || 'tool'} needs your decision` };

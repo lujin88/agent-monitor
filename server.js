@@ -11,10 +11,16 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const net = require('net');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const PORT = Number(process.env.PORT) || 7777;
+// Where the dashboard listens. Default: this Mac only (127.0.0.1, plus ::1 because macOS
+// resolves localhost to IPv6 first). MONITOR_HOST=0.0.0.0 opens it to devices on the same
+// network, for approving from an iPad at home. Hook endpoints stay loopback-only either way.
+const LISTEN_HOST = process.env.MONITOR_HOST || '127.0.0.1';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const WAIT_SEC = Number(process.env.APPROVAL_WAIT_SEC) || 60; // how long an approval waits for the iPad
 const RUNNING_STALE_MS = (Number(process.env.RUNNING_STALE_MIN) || 30) * 60e3;
 const DONE_RETENTION_MS = (Number(process.env.DONE_RETENTION_HOURS) || 24 * 7) * 3600e3;
@@ -323,9 +329,30 @@ function send(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// A local proxy (for example tailscale serve) connects from 127.0.0.1 on behalf of another
+// device, so a request that says it was forwarded never counts as this Mac.
 function isLoopback(req) {
   const a = req.socket.remoteAddress;
-  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+  if (!(a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1')) return false;
+  return !Object.keys(req.headers).some((h) => h === 'x-forwarded-for' || h === 'forwarded' || h === 'x-real-ip' || h.startsWith('tailscale-'));
+}
+
+// DNS rebinding: a web page on a domain that resolves to this Mac must not be served.
+// Only IP literals, localhost and *.local names are accepted.
+function hostAllowed(req) {
+  const raw = String(req.headers.host || '');
+  const name = raw.startsWith('[') ? raw.slice(1, raw.indexOf(']')) : raw.replace(/:\d+$/, '');
+  if (!name) return false;
+  if (name === 'localhost' || /^[a-z0-9-]+(\.[a-z0-9-]+)*\.local$/i.test(name)) return true;
+  return net.isIP(name) !== 0;
+}
+
+// Addresses another device on the same network can use (for the QR code on this Mac).
+function lanAddresses() {
+  if (LOOPBACK_HOSTS.has(LISTEN_HOST)) return [];
+  return Object.entries(os.networkInterfaces()).flatMap(([name, list]) =>
+    (list || []).filter((i) => i.family === 'IPv4' && !i.internal && (LISTEN_HOST === '0.0.0.0' || LISTEN_HOST === i.address))
+      .map((i) => ({ name, address: i.address })));
 }
 
 function keyOk(given) {
@@ -538,21 +565,33 @@ function applyEvent(e) {
 
 // A failure while handling one request must never take down the monitor (and with it
 // every held approval): answer 500 instead of leaving an unhandled rejection.
-const server = http.createServer((req, res) => {
+// server answers on 127.0.0.1; server6 on ::1 (see the listen calls at the end).
+const server = http.createServer(onRequest), server6 = http.createServer(onRequest);
+function onRequest(req, res) {
   handleRequest(req, res).catch(() => {
     if (!res.headersSent) { try { send(res, 500, { ok: false, error: 'internal error' }); } catch (_) {} }
     else res.destroy();
   });
-});
+}
 
 async function handleRequest(req, res) {
   const u = new URL(req.url, 'http://localhost');
   const url = u.pathname;
+  if (!hostAllowed(req)) return send(res, 421, { error: 'unknown host' });
 
   if (req.method === 'GET' && (url === '/' || url === '/index.html')) {
     fs.readFile(path.join(__dirname, 'index.html'), (err, buf) => {
       if (err) { res.writeHead(500); return res.end('index.html missing'); }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(buf);
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && url === '/vendor-qrcode.js') {
+    fs.readFile(path.join(__dirname, 'vendor-qrcode.js'), (err, buf) => {
+      if (err) { res.writeHead(404); return res.end('missing'); }
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(buf);
     });
     return;
@@ -567,12 +606,22 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (!keyOk(req.headers['x-key'] || u.searchParams.get('key'))) return send(res, 401, { error: 'unauthorized' });
+  // Requests that change something take the key only from the x-key header: a key in a
+  // URL ends up in browser history, logs and screenshots.
+  const givenKey = req.headers['x-key'] || (req.method === 'GET' ? u.searchParams.get('key') : null);
+  if (!keyOk(givenKey)) return send(res, 401, { error: 'unauthorized' });
 
   if (req.method === 'GET' && url === '/state') {
     if (!closing) prune();
-    return send(res, 200, { now: Date.now(), waitSec: WAIT_SEC, sessions: publicSessions(), usage, usageStatus, chatTracking, notificationStatus,
+    return send(res, 200, { now: Date.now(), waitSec: WAIT_SEC, local: isLoopback(req), sessions: publicSessions(), usage, usageStatus, chatTracking, notificationStatus,
       reports, hookConfig, notificationReader: notificationReaderStatus(), grokActivity, reviewWindow: reviewWindow() });
+  }
+
+  // For the "Open on iPad" QR code, built on this Mac's own page. The key is never sent:
+  // the page already has it. Only this Mac may ask.
+  if (req.method === 'GET' && url === '/lan-addresses') {
+    if (!isLoopback(req)) return send(res, 403, { error: 'local only' });
+    return send(res, 200, { port: PORT, localOnly: LOOPBACK_HOSTS.has(LISTEN_HOST), addresses: lanAddresses() });
   }
 
   // Shutting down: no new mutations. Held approvals have already been released.
@@ -818,8 +867,10 @@ function shutdown(signal) {
   for (const t of background) clearInterval(t);
   try { stopGrokWatch(); } catch (_) {}
   if (stopCodex) stopCodex();
-  server.close();
-  if (server.closeIdleConnections) server.closeIdleConnections();
+  for (const server of servers) {
+    server.close();
+    if (server.closeIdleConnections) server.closeIdleConnections();
+  }
 
   // Held hooks get "none" (the normal prompt appears on the Mac). Their sessions keep the
   // approval marker, so the next start shows "Dashboard restarted. Confirm ... in the agent app."
@@ -842,14 +893,24 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('\nAgent Monitor is running.\n');
-  console.log(`  On this Mac:  http://localhost:${PORT}/?key=${TOKEN}`);
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const i of list || []) {
-      if (i.family === 'IPv4' && !i.internal) console.log(`  On your iPad: http://${i.address}:${PORT}/?key=${TOKEN}`);
-    }
+// LISTEN_HOST (default 127.0.0.1) plus ::1 for localhost. Hook endpoints check
+// isLoopback() themselves, so they stay on this Mac whatever LISTEN_HOST is.
+const servers = [server, server6];
+const coversIPv6Loopback = LISTEN_HOST === '::' || LISTEN_HOST === '::1';
+server6.on('error', (err) => {
+  if (err.code === 'EADDRNOTAVAIL' || err.code === 'EAFNOSUPPORT') {
+    console.error(`IPv6 loopback unavailable (${err.code}); use http://127.0.0.1:${PORT}/`);
+    return;
   }
-  console.log('\nOpen the iPad link once; the key is remembered. Keep the key private: it can approve commands.');
-  console.log(`Approvals wait ${WAIT_SEC}s for the iPad, then fall back to the normal prompt on the Mac.\n`);
+  throw err;
+});
+if (!coversIPv6Loopback) server6.listen(PORT, '::1');
+server.listen(PORT, LISTEN_HOST, () => {
+  console.log('\nAgent Monitor is running.\n');
+  // The access key is never printed: logs are kept on disk. It is in token.txt.
+  console.log(`  On this Mac:  http://localhost:${PORT}/`);
+  console.log(LOOPBACK_HOSTS.has(LISTEN_HOST) ? '  Other devices: off (MONITOR_HOST=' + LISTEN_HOST + ')'
+    : '  Other devices: use "Open on iPad or phone" on this Mac\'s dashboard (same Wi-Fi only).');
+  console.log('\nAdd ?key=<contents of token.txt> once; the key is remembered. Keep it private: it can approve commands.');
+  console.log(`Approvals wait ${WAIT_SEC}s for the dashboard, then fall back to the normal prompt on the Mac.\n`);
 });
