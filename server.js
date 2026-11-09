@@ -26,6 +26,16 @@ const RUNNING_STALE_MS = (Number(process.env.RUNNING_STALE_MIN) || 30) * 60e3;
 const DONE_RETENTION_MS = (Number(process.env.DONE_RETENTION_HOURS) || 24 * 7) * 3600e3;
 const DATA_FILE = path.join(__dirname, 'state.json');
 const TOKEN_FILE = path.join(__dirname, 'token.txt');
+const PIXEL_OFFICE_PUBLIC = {
+  '/assets/pixel-office/ROOM_EMPTY_V4_R2_768.png': {
+    abs: path.join(__dirname, 'assets', 'pixel-office', 'ROOM_EMPTY_V4_R2_768.png'),
+    type: 'image/png',
+  },
+  '/assets/pixel-office/seats.json': {
+    abs: path.join(__dirname, 'assets', 'pixel-office', 'seats.json'),
+    type: 'application/json; charset=utf-8',
+  },
+};
 const STATUSES = ['running', 'needs_action', 'done', 'unobserved'];
 // How long a sent decision waits for the hook's receipt (kept below the Dashboard's 8 s request limit).
 const ACK_WAIT_MS = Math.max(1, Math.min(7000, Number(process.env.APPROVAL_ACK_MS) || 4000));
@@ -613,6 +623,23 @@ async function handleRequest(req, res) {
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
       res.end(buf);
     });
+    return;
+  }
+
+  // Pixel Office: two exact public paths only. Never join the request path onto disk.
+  if (req.method === 'GET' && (url === '/assets/pixel-office/ROOM_EMPTY_V4_R2_768.png' || url === '/assets/pixel-office/seats.json')) {
+    const asset = PIXEL_OFFICE_PUBLIC[url];
+    fs.readFile(asset.abs, (err, buf) => {
+      if (err) { res.writeHead(404); return res.end('missing'); }
+      res.writeHead(200, { 'Content-Type': asset.type, 'Cache-Control': 'no-store' });
+      res.end(buf);
+    });
+    return;
+  }
+  const rawUrl = req.url || '';
+  if (rawUrl.includes('..') || rawUrl.includes('%2e') || rawUrl.includes('%2E') || url.startsWith('/assets/')) {
+    res.writeHead(404);
+    res.end('not found');
     return;
   }
 
