@@ -382,6 +382,16 @@ function prune() {
     if ((s.status === 'done' || (s.status === 'unobserved' && !requestsFor(id).length)) && age > DONE_RETENTION_MS) {
       delete sessions[id];
       changed = true;
+    } else if (s.status === 'needs_action' && !requestsFor(id).length && Number.isFinite(s.updatedAt) &&
+        s.updatedAt < reviewWindow(now).start) {
+      // A "waiting for you" card with no live request (Dashboard wait ended, or a Grok/Cursor
+      // reminder) is cleared at the daily 06:00 reset. It was answered in the agent app or
+      // abandoned; the Monitor never hears which. It becomes "status unknown" and then
+      // expires with the done-task retention. A live approval request is never touched.
+      s.status = 'unobserved';
+      s.message = 'Not answered here before the 6:00 AM reset · status unknown';
+      delete s.approval;
+      changed = true;
     } else if (s.status === 'running' && s.stateSource !== 'chat-observer' && age > RUNNING_STALE_MS) {
       s.status = 'unobserved';
       s.message = 'No recent activity · status unknown';
