@@ -15,6 +15,11 @@
 *.json
 !package.json
 !package-lock.json
+# Pixel Office prototype: a static page, its room config and images. Listed after *.json so its
+# JSON is tracked; token.txt and .env* below still win inside this folder.
+!/pixel-min/
+!/pixel-min/**/*.json
+/pixel-min/**/*backup*
 token.txt
 .env*
 node_modules/

@@ -1,0 +1,382 @@
+{
+ "width": 2048,
+ "height": 1152,
+ "fit": "cover",
+ "version": "20261110-s",
+ "note": "空房间 v4（16:9），6 只角色；椅子单独一层盖在角色上面",
+ "rendering": "auto",
+ "scenes": [
+  {
+   "id": "day",
+   "label": "白天（空房间 v4）",
+   "src": "room-empty-day-v4-16x9.png"
+  }
+ ],
+ "seats": [
+  {
+   "id": "L1",
+   "kind": "chair",
+   "desk": "empty",
+   "x": 640,
+   "y": 504,
+   "edge": {
+    "left": 640,
+    "right": 1408,
+    "top": 504,
+    "bottom": 648
+   }
+  },
+  {
+   "id": "L2",
+   "kind": "chair",
+   "x": 583,
+   "y": 540,
+   "edge": {
+    "left": 583,
+    "right": 1465,
+    "top": 540,
+    "bottom": 612
+   }
+  },
+  {
+   "id": "L3",
+   "kind": "chair",
+   "desk": "empty",
+   "x": 522,
+   "y": 578,
+   "edge": {
+    "left": 522,
+    "right": 1526,
+    "top": 578,
+    "bottom": 574
+   }
+  },
+  {
+   "id": "L4",
+   "kind": "chair",
+   "x": 451,
+   "y": 620,
+   "edge": {
+    "left": 451,
+    "right": 1597,
+    "top": 620,
+    "bottom": 532
+   }
+  },
+  {
+   "id": "C1",
+   "kind": "chair",
+   "x": 981,
+   "y": 505,
+   "occluded": true,
+   "edge": {
+    "left": 981,
+    "right": 1067,
+    "top": 505,
+    "bottom": 647
+   }
+  },
+  {
+   "id": "C2",
+   "kind": "chair",
+   "x": 1269,
+   "y": 490,
+   "occluded": true,
+   "edge": {
+    "left": 1269,
+    "right": 779,
+    "top": 490,
+    "bottom": 662
+   }
+  },
+  {
+   "id": "C3",
+   "kind": "chair",
+   "x": 988,
+   "y": 690,
+   "edge": {
+    "left": 988,
+    "right": 1060,
+    "top": 690,
+    "bottom": 462
+   }
+  },
+  {
+   "id": "C4",
+   "kind": "chair",
+   "x": 1268,
+   "y": 695,
+   "edge": {
+    "left": 1268,
+    "right": 780,
+    "top": 695,
+    "bottom": 457
+   }
+  },
+  {
+   "id": "R1",
+   "kind": "chair",
+   "x": 1539,
+   "y": 511,
+   "edge": {
+    "left": 1539,
+    "right": 509,
+    "top": 511,
+    "bottom": 641
+   }
+  },
+  {
+   "id": "R2",
+   "kind": "chair",
+   "x": 1609,
+   "y": 604,
+   "edge": {
+    "left": 1609,
+    "right": 439,
+    "top": 604,
+    "bottom": 548
+   }
+  },
+  {
+   "id": "R3",
+   "kind": "chair",
+   "desk": "empty",
+   "x": 1684,
+   "y": 711,
+   "edge": {
+    "left": 1684,
+    "right": 364,
+    "top": 711,
+    "bottom": 441
+   }
+  },
+  {
+   "id": "B1",
+   "kind": "chair",
+   "x": 1174,
+   "y": 945,
+   "edge": {
+    "left": 1174,
+    "right": 874,
+    "top": 945,
+    "bottom": 207
+   }
+  },
+  {
+   "id": "B2",
+   "kind": "chair",
+   "x": 1453,
+   "y": 945,
+   "edge": {
+    "left": 1453,
+    "right": 595,
+    "top": 945,
+    "bottom": 207
+   }
+  }
+ ],
+ "anchor": "侧面椅子：坐垫中心。C1/C2 被桌子挡住：推定坐点。C3/C4/B1/B2 从背后看，坐垫被椅背挡住：椅背中下部。",
+ "rest": [
+  {
+   "id": "Q1",
+   "kind": "rest",
+   "x": 1414,
+   "y": 280,
+   "edge": {
+    "left": 1414,
+    "right": 634,
+    "top": 280,
+    "bottom": 872
+   }
+  },
+  {
+   "id": "Q2",
+   "kind": "rest",
+   "x": 1579,
+   "y": 278,
+   "edge": {
+    "left": 1579,
+    "right": 469,
+    "top": 278,
+    "bottom": 874
+   }
+  },
+  {
+   "id": "S1",
+   "kind": "rest",
+   "x": 406,
+   "y": 868,
+   "edge": {
+    "left": 406,
+    "right": 1642,
+    "top": 868,
+    "bottom": 284
+   }
+  },
+  {
+   "id": "S2",
+   "kind": "rest",
+   "x": 492,
+   "y": 880,
+   "edge": {
+    "left": 492,
+    "right": 1556,
+    "top": 880,
+    "bottom": 272
+   }
+  }
+ ],
+ "agents": [
+  {
+   "id": "pm",
+   "name": "项目经理",
+   "w": 362,
+   "h": 362,
+   "anchor": [
+    181,
+    310
+   ],
+   "scale": 0.54,
+   "seat": "R3",
+   "rest": "S1",
+   "task": "排今晚的任务，回 Lu 的问题",
+   "frames": {
+    "dir": "actors/bear-pm/",
+    "work": {
+     "static": 0,
+     "loop": [
+      [
+       0,
+       200
+      ],
+      [
+       1,
+       200
+      ],
+      [
+       2,
+       200
+      ],
+      [
+       3,
+       200
+      ],
+      [
+       0,
+       2000
+      ],
+      [
+       6,
+       200
+      ],
+      [
+       4,
+       200
+      ],
+      [
+       0,
+       2000
+      ]
+     ]
+    },
+    "rest": {
+     "static": 8,
+     "loop": [
+      [
+       8,
+       200
+      ],
+      [
+       9,
+       200
+      ],
+      [
+       10,
+       200
+      ],
+      [
+       11,
+       200
+      ],
+      [
+       8,
+       2000
+      ]
+     ]
+    }
+   },
+   "front": true
+  },
+  {
+   "id": "dev",
+   "name": "开发",
+   "w": 160,
+   "h": 255,
+   "anchor": [
+    72,
+    180
+   ],
+   "scale": 1,
+   "seat": "L4",
+   "sprite": "actors/raccoon.png",
+   "task": "修 agent-monitor 的一个小问题"
+  },
+  {
+   "id": "qa",
+   "name": "QA",
+   "w": 120,
+   "h": 155,
+   "anchor": [
+    55,
+    150
+   ],
+   "scale": 1,
+   "seat": "L2",
+   "sprite": "actors/snake.png",
+   "task": "审一个待合并的 PR"
+  },
+  {
+   "id": "video",
+   "name": "视频",
+   "w": 190,
+   "h": 220,
+   "anchor": [
+    86,
+    200
+   ],
+   "scale": 1,
+   "seat": "R1",
+   "sprite": "actors/rabbit.png",
+   "task": "剪一段演示视频"
+  },
+  {
+   "id": "copy",
+   "name": "文案",
+   "w": 160,
+   "h": 180,
+   "anchor": [
+    35,
+    165
+   ],
+   "scale": 1,
+   "seat": "C3",
+   "sprite": "actors/ferret.png",
+   "task": "改一页的说明文字"
+  },
+  {
+   "id": "hardware",
+   "name": "硬件顾问",
+   "w": 190,
+   "h": 225,
+   "anchor": [
+    95,
+    167
+   ],
+   "scale": 1,
+   "seat": "B2",
+   "sprite": "actors/turtle.png",
+   "task": "查一台设备的参数"
+  }
+ ],
+ "chairs": "chairs-day-v4.png"
+}

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pixel Office · 最小验证（模拟数据）</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#3a3538;overflow:hidden;font:12px/1.35 -apple-system,BlinkMacSystemFont,sans-serif;color:#f4efe8}
+/* cover：整幅画面按底图比例（--ar，来自房间配置）放大到盖住视口。
+   横屏：左右居中，贴着底边，多出来的从顶上切（下排工位贴着画布底边，藤蔓少一截没关系）。
+   竖屏：高度铺满，左右用手指拖着看，打开时停在中间（见 centre()）。
+   座位和角色都在 .frame 里按百分比定位，所以和底图用的是同一套缩放和偏移。 */
+.stage{position:fixed;inset:0;overflow:hidden}
+.frame{--ar:1.5;position:absolute;left:50%;bottom:0;width:max(100vw,calc(100vh*var(--ar)));height:max(100vh,calc(100vw/var(--ar)));transform:translateX(-50%)}
+@supports (height:100dvh){.frame{width:max(100vw,calc(100dvh*var(--ar)));height:max(100dvh,calc(100vw/var(--ar)))}}
+@media (orientation:portrait){
+  .stage{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior:none}
+  .stage::-webkit-scrollbar{display:none}
+  .frame{left:0;transform:none}
+}
+.room{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+.frame[data-rendering=pixelated] .room,.frame[data-rendering=pixelated] .actor img{image-rendering:pixelated}
+/* 每个角色有两个位置：工位（work）和休息区（rest）。有任务显示工位那张，空闲显示休息区那张，
+   不在线两张都不显示。换状态时一张淡出、另一张淡入，各 0.3s。 */
+/* 层次从下到上：底图 → 角色 → 椅子层（从底图里抠出来的椅子，盖住角色被切掉的下半身）→ front 角色（整只都画全了的，坐在椅子前面）→ 座位点。 */
+.chairs{z-index:3}
+.actor.front{z-index:4}
+.actor{position:absolute;z-index:2;margin:0;padding:0;border:0;background:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .3s ease}
+.actor.on{opacity:1;pointer-events:auto}
+.actor img{display:block;width:100%;height:auto}
+.actor:focus{outline:none}
+/* 提示框和键盘焦点框不画在角色按钮里（按钮在椅子层下面，会被椅背盖住一截），
+   而是画在最上面单独一层里，位置跟着当前那只角色的按钮。这一层不接收鼠标。 */
+.hud{position:absolute;inset:0;z-index:6;pointer-events:none}
+.ring{position:absolute;border-radius:3px;outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px #15181e99}
+.tip{position:absolute;transform:translate(-50%,calc(-100% - 4px));padding:4px 8px;border-radius:5px;background:#15181ef2;color:#f4efe8;font:600 11px/1.35 system-ui;white-space:nowrap;opacity:0;transition:opacity .15s ease;text-align:left}
+.tip small{display:block;font-weight:400;color:#b7c2d0}
+.tip.show{opacity:1}
+@media (prefers-reduced-motion:reduce){.actor,.tip{transition:none}}
+.mark{position:absolute;z-index:5;width:8px;height:8px;margin:0;padding:0;border:2px solid #fff;border-radius:50%;background:#c45c26;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 0 0 1px #0008}
+.mark[data-kind=rest]{background:#2f6f6a}
+.mark[data-occluded]{border-radius:0;background:#8a5a20}
+.mark span{position:absolute;left:10px;top:-7px;padding:0 4px;border-radius:3px;background:#c45c26e6;color:#fff;font:700 9px/14px system-ui;white-space:nowrap}
+.mark[data-kind=rest] span{background:#2f6f6ae6}
+.mark[data-occluded] span{background:#8a5a20e6}
+.sim{position:fixed;top:10px;left:10px;z-index:5;margin:0;padding:3px 8px;border-radius:4px;background:#c45c26;color:#fff;font-weight:700}
+.bar{position:fixed;left:10px;bottom:10px;z-index:5;display:flex;flex-wrap:wrap;gap:5px;padding:7px;border-radius:8px;background:#15181ee6;max-width:calc(100vw - 20px)}
+.bar button{height:26px;padding:0 8px;border:0;border-radius:5px;background:#2a3140;color:#d5deea;font:inherit;cursor:pointer}
+.bar button[aria-pressed=true]{background:#fff;color:#1a1d22}
+.card{position:fixed;right:10px;bottom:10px;z-index:5;width:min(260px,calc(100vw - 20px));padding:12px;border-radius:8px;background:#15181ee6}
+.card h2{margin:0 0 4px;font-size:15px}
+.card p{margin:0;color:#b7c2d0}
+</style>
+</head>
+<body>
+<p class="sim" id="sim">模拟数据</p>
+<div class="stage" id="stage"><div class="frame" id="frame"></div></div>
+<div class="bar" id="bar">
+  <button type="button" data-state="working" aria-pressed="true">有任务</button>
+  <button type="button" data-state="idle" aria-pressed="false">空闲</button>
+  <button type="button" data-state="offline" aria-pressed="false">不在线</button>
+  <button type="button" id="toggle-marks" aria-pressed="true">座位</button>
+</div>
+<aside class="card" id="card" hidden>
+  <h2 id="card-name"></h2>
+  <p id="card-state"></p>
+  <p id="card-task"></p>
+  <p>模拟数据 · 无进度</p>
+</aside>
+<script>
+// 房间配置在 JSON 里：底图、尺寸、座位、休息位、角色都从那里读，换底图只换 JSON 和图片，不改这页。
+// 默认 seats.json（现在是白天的房间）；?room=<名字> 读 room-<名字>.json，方便以后加别的房间。
+// ?room=day 是之前发出去的地址，仍然打开默认房间。
+// 状态是模拟的（底部三个按钮一起切所有角色）。接真数据时规则是：
+//   有 Scranton 派的任务 → working（坐工位）；在线但没任务 → idle（去休息区）；不在线 → offline（不出现）。
+//   只是在线不算有任务。
+const q=new URLSearchParams(location.search);
+const roomName=/^[a-z0-9-]+$/.test(q.get('room')||'')&&q.get('room')!=='day'?q.get('room'):'';
+const labels={working:'有任务',idle:'空闲',offline:'不在线'};
+const $=id=>document.getElementById(id);
+const stage=$('stage'),frame=$('frame'),card=$('card'),bar=$('bar');
+let ROOM,state='working',showMarks=true,picked=null;
+const pct=(n,d)=>(n/d*100).toFixed(3)+'%';
+function mark(s,kind){
+  const W=ROOM.width,H=ROOM.height,m=document.createElement('span');
+  m.className='mark';
+  m.dataset.kind=kind;
+  if(s.occluded)m.dataset.occluded='1';
+  m.appendChild(Object.assign(document.createElement('span'),{textContent:s.id}));
+  m.title=s.id+' '+s.x+','+s.y+' · 距左'+s.x+' 右'+(W-s.x)+' 上'+s.y+' 下'+(H-s.y)+'px';
+  m.style.left=pct(s.x,W);
+  m.style.top=pct(s.y,H);
+  frame.appendChild(m);
+}
+// 角色图按底图的像素比例放（图上 1px = 底图 1px × scale），anchor 是图里「坐点」的位置，对到座位点上。
+function actorAt(agent,spot,where){
+  const W=ROOM.width,H=ROOM.height,sc=agent.scale||1,[ax,ay]=agent.anchor;
+  const b=document.createElement('button');
+  b.type='button';b.className='actor'+(agent.front?' front':'');b.dataset.agent=agent.id;b.dataset.where=where;
+  b.style.left=pct(spot.x-ax*sc,W);
+  b.style.top=pct(spot.y-ay*sc,H);
+  b.style.width=pct(agent.w*sc,W);
+  b.style.height=pct(agent.h*sc,H);
+  // 工位在桌子后面时，clipY 以下的部分被桌子挡住：按底图坐标裁掉。
+  if(where==='work'&&agent.workClipY!=null){
+    const bottom=spot.y+(agent.h-ay)*sc,cut=Math.max(0,bottom-agent.workClipY)/(agent.h*sc);
+    b.dataset.cut=(cut*100).toFixed(2);
+  }
+  const img=new Image(agent.w,agent.h);img.alt='';
+  // 裁在图上，不裁在按钮上，不然上面的任务提示也会被裁掉
+  if(b.dataset.cut)img.style.clipPath='inset(0 0 '+b.dataset.cut+'% 0)';
+  img.src=agent.frames?frameSrc(agent,agent.frames[where].static):agent.sprite;
+  b.append(img);
+  b.onmouseenter=()=>{hover=b;hud()};
+  b.onmouseleave=()=>{if(hover===b)hover=null;hud()};
+  b.onfocus=b.onblur=()=>hud();
+  b.onclick=()=>{picked=picked===agent.id?null:agent.id;render()};
+  frame.appendChild(b);
+}
+const frameSrc=(a,n)=>a.frames.dir+'frame-'+String(n).padStart(2,'0')+'.png';
+// 循环动作：一个角色同一时间只播当前状态那一处的一条循环（work 或 rest），一帧一帧换图。
+// 「减少动态效果」打开、或标签页不可见时不播，只显示静态帧。
+const reduce=matchMedia('(prefers-reduced-motion: reduce)');
+const timers={};
+// 最上层：一个提示框、一个焦点框。跟着「键盘焦点所在的角色」走，没有焦点时跟着鼠标所在的角色。
+// 角色不在场（换了状态、淡出了）或者焦点、鼠标都移走了，就什么都不留。
+let hover=null;
+const hudEl=Object.assign(document.createElement('div'),{className:'hud'});
+const ring=Object.assign(document.createElement('span'),{className:'ring',hidden:true});
+const tip=Object.assign(document.createElement('span'),{className:'tip'});
+tip.setAttribute('aria-hidden','true');
+hudEl.append(ring,tip);
+function hud(){
+  const f=document.activeElement,live=el=>el&&el.classList&&el.classList.contains('actor')&&el.classList.contains('on');
+  const focused=live(f)?f:null,target=focused||(live(hover)?hover:null);
+  ring.hidden=!(focused&&focused.matches(':focus-visible'));
+  if(!ring.hidden)['left','top','width','height'].forEach(k=>ring.style[k]=focused.style[k]);
+  tip.classList.toggle('show',!!target);
+  if(!target)return;
+  const a=(ROOM.agents||[]).find(x=>x.id===target.dataset.agent);
+  tip.textContent='';
+  tip.append(a.name+' · '+labels[state],Object.assign(document.createElement('small'),{textContent:target.dataset.task||''}));
+  tip.style.left='calc('+target.style.left+' + '+target.style.width+' / 2)';
+  tip.style.top=target.style.top;
+}
+function play(a,where){
+  clearTimeout(timers[a.id]);
+  if(!a.frames)return;
+  ['work','rest'].forEach(w=>{
+    const img=document.querySelector('.actor[data-agent="'+a.id+'"][data-where='+w+'] img');
+    if(img)img.src=frameSrc(a,a.frames[w].static);
+  });
+  if(!where||reduce.matches||document.hidden||q.get('still')==='1')return;
+  const img=document.querySelector('.actor[data-agent="'+a.id+'"][data-where='+where+'] img'),loop=a.frames[where].loop;
+  if(!img||!loop)return;
+  let i=0;
+  const step=()=>{img.src=frameSrc(a,loop[i][0]);timers[a.id]=setTimeout(step,loop[i][1]);i=(i+1)%loop.length};
+  step();
+}
+function build(room){
+  ROOM=room;
+  const W=room.width,H=room.height;
+  frame.style.setProperty('--ar',String(W/H));
+  if(room.rendering)frame.dataset.rendering=room.rendering;
+  $('sim').textContent='模拟数据 · pixel-min '+room.version+(room.note?' · '+room.note:'');
+  const first=bar.firstElementChild;
+  room.scenes.forEach((sc,i)=>{
+    const img=new Image(W,H);
+    img.className='room';img.alt='';img.dataset.scene=sc.id;img.src=sc.src;img.hidden=i>0;
+    frame.appendChild(img);
+    const b=document.createElement('button');
+    b.type='button';b.dataset.scene=sc.id;b.textContent=sc.label;b.setAttribute('aria-pressed',String(i===0));
+    b.onclick=()=>setScene(sc.id);
+    bar.insertBefore(b,first);
+  });
+  if(room.chairs){
+    const c=new Image(W,H);c.className='room chairs';c.alt='';c.src=room.chairs;frame.appendChild(c);
+  }
+  const seats=room.seats||[],rest=room.rest||[];
+  // 靠后的（y 小的）先画，靠前的盖在上面
+  const seatY=a=>(seats.find(s=>s.id===a.seat)||{y:0}).y;
+  [...(room.agents||[])].sort((a,b)=>seatY(a)-seatY(b)).forEach(a=>{
+    const seat=seats.find(s=>s.id===a.seat),spot=rest.find(s=>s.id===a.rest);
+    if(seat)actorAt(a,seat,'work');
+    if(spot)actorAt(a,spot,'rest');
+  });
+  (room.agents||[]).forEach(a=>{if(a.frames)new Set([...a.frames.work.loop,...a.frames.rest.loop].map(f=>f[0])).forEach(n=>{new Image().src=frameSrc(a,n)})});
+  frame.appendChild(hudEl);
+  seats.forEach(s=>mark(s,'seat'));
+  rest.forEach(s=>mark(s,'rest'));
+  if(!seats.length&&!rest.length)$('toggle-marks').hidden=true;
+  if(!(room.agents||[]).length)document.querySelectorAll('button[data-state]').forEach(b=>b.hidden=true);
+  centre();
+  if(q.get('marks')==='0')$('toggle-marks').click();
+  if(room.scenes.some(sc=>sc.id===q.get('scene')))setScene(q.get('scene'));
+  if(labels[q.get('state')])state=q.get('state');
+  render();
+}
+function render(){
+  document.querySelectorAll('button[data-state]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===state)));
+  const show=state==='working'?'work':state==='idle'?'rest':'';
+  (ROOM.agents||[]).forEach(a=>{
+    const task=state==='working'?a.task:state==='idle'?'没有派给它的任务，在休息':'';
+    // 没有休息姿势的角色（只有一张工位图）空闲时不显示，等休息的图画出来再放进休息区
+    document.querySelectorAll('.actor[data-agent="'+a.id+'"]').forEach(el=>{
+      const on=el.dataset.where===show;
+      el.classList.toggle('on',on);
+      el.tabIndex=on?0:-1;
+      el.setAttribute('aria-hidden',String(!on));
+      el.setAttribute('aria-label',a.name+'，'+labels[state]+(task?'：'+task:''));
+      el.dataset.task=task;
+      if(!on&&document.activeElement===el)el.blur();
+    });
+  });
+  (ROOM.agents||[]).forEach(a=>play(a,show));
+  hud();
+  const a=(ROOM.agents||[]).find(x=>x.id===picked);
+  card.hidden=!a||state==='offline';
+  if(a){
+    $('card-name').textContent=a.name;
+    $('card-state').textContent=labels[state];
+    $('card-task').textContent=state==='working'?'假任务：'+a.task:'没有派给它的任务';
+  }
+}
+// 竖屏时画面比屏幕宽：停在正中间。横屏时 scrollWidth==clientWidth，这里什么也不做。
+function centre(){stage.scrollLeft=(stage.scrollWidth-stage.clientWidth)/2}
+function setScene(name){
+  document.querySelectorAll('[data-scene]').forEach(el=>{
+    if(el.tagName==='IMG') el.hidden=el.dataset.scene!==name;
+    else if(el.tagName==='BUTTON') el.setAttribute('aria-pressed',String(el.dataset.scene===name));
+  });
+}
+document.querySelectorAll('button[data-state]').forEach(b=>b.onclick=()=>{state=b.dataset.state;render()});
+$('toggle-marks').onclick=()=>{
+  showMarks=!showMarks;
+  $('toggle-marks').setAttribute('aria-pressed',String(showMarks));
+  document.querySelectorAll('.mark').forEach(m=>m.hidden=!showMarks);
+};
+// 只有宽度变了（含转屏）才重新居中。手机上地址栏收起、展开只改高度，也会触发 resize；
+// 那时候不能把用户拖到一边的画面拉回中间：画面跟着高度缩放，所以按原来的左右比例放回去。
+let lastW=innerWidth,pan=.5,restoring=false;
+const maxPan=()=>stage.scrollWidth-stage.clientWidth;
+stage.addEventListener('scroll',()=>{if(!restoring&&maxPan()>0)pan=stage.scrollLeft/maxPan()},{passive:true});
+addEventListener('resize',()=>{
+  restoring=true;
+  if(innerWidth!==lastW){lastW=innerWidth;centre();pan=.5}
+  else stage.scrollLeft=pan*maxPan();
+  requestAnimationFrame(()=>{restoring=false});
+});
+document.addEventListener('visibilitychange',()=>ROOM&&render());
+reduce.addEventListener('change',()=>ROOM&&render());
+fetch(roomName?'room-'+roomName+'.json':'seats.json').then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(build)
+  .catch(e=>{$('sim').textContent='房间配置读不到：'+e.message});
+</script>
+</body>
+</html>
