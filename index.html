@@ -321,12 +321,20 @@ body{padding-top:14px;padding-bottom:14px}
 /* Four equal usage columns; compact layout keeps iPad labels and values readable. */
 .usage{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:1500px){
- .usage .usage-item{display:flex;flex-direction:column;justify-content:center;align-items:stretch;padding:10px 14px}
- .usage .usage-label{margin:0 0 6px;grid-template-columns:24px minmax(0,1fr);column-gap:7px;font-size:13px}
+ /* Label on the left, amount + bar + reset on the right: the stacked layout needed ~117px
+    and the usage row is ~85px tall here, so the bar and "Resets in" were cut off. */
+ .usage .usage-item{display:grid;grid-template-columns:92px minmax(0,1fr);grid-template-rows:auto auto auto;column-gap:12px;align-content:center;padding:10px 16px}
+ .usage .usage-label{grid-column:1;grid-row:1/4;align-self:center;margin:0;grid-template-columns:24px minmax(0,1fr);column-gap:7px;font-size:13px}
  .usage .usage-label .mark{width:24px;height:24px}
  .usage .usage-main{margin:0 0 4px}.usage .usage-main strong{font-size:22px;line-height:26px}
- .usage .usage-foot{margin-top:5px;white-space:normal;font-size:10px;line-height:14px}
+ .usage .usage-foot{margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;line-height:14px}
  .usage .bar{width:100%;flex:none}
+}
+@media(max-width:900px){
+ /* Narrow screens give the usage row more height; stacking fits there. */
+ .usage .usage-item{display:flex;flex-direction:column;justify-content:center;align-items:stretch;padding:10px 14px}
+ .usage .usage-label{margin:0 0 6px}
+ .usage .usage-foot{white-space:normal}
 }
 @media(max-width:600px){
  .usage .usage-item{padding:6px}.usage .usage-label{grid-template-columns:18px minmax(0,1fr);column-gap:4px;font-size:10px}
