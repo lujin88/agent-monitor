@@ -1,0 +1,19 @@
+{
+  "width": 768,
+  "height": 656,
+  "seats": [
+    {"id": "A1", "group": "NW_WORKBENCH", "handle": "harness", "label": "Harness", "chair": [243, 247], "monitor": [211, 262]},
+    {"id": "A2", "group": "NW_WORKBENCH", "handle": "dev", "label": "Dev", "chair": [277, 264], "monitor": [245, 279]},
+    {"id": "A3", "group": "NW_WORKBENCH", "handle": "qa", "label": "QA", "chair": [313, 282], "monitor": [281, 297]},
+    {"id": "A4", "group": "NW_WORKBENCH", "handle": "webdev", "label": "Webdev", "chair": [347, 299], "monitor": [315, 314]},
+    {"id": "B1", "group": "NE_WORKBENCH", "handle": "visual", "label": "Visual", "chair": [495, 289], "monitor": [463, 304]},
+    {"id": "B2", "group": "NE_WORKBENCH", "handle": "visualqa", "label": "Visual QA", "chair": [529, 306], "monitor": [497, 321]},
+    {"id": "B3", "group": "NE_WORKBENCH", "handle": "motion", "label": "Motion", "chair": [565, 324], "monitor": [533, 339]},
+    {"id": "B4", "group": "NE_WORKBENCH", "handle": "copy", "label": "Copy", "chair": [599, 341], "monitor": [567, 356]},
+    {"id": "C1", "group": "SW_WORKBENCH", "handle": "research", "label": "Research", "chair": [207, 441], "monitor": [175, 456]},
+    {"id": "C2", "group": "SW_WORKBENCH", "handle": "video", "label": "Video", "chair": [241, 458], "monitor": [209, 473]},
+    {"id": "C3", "group": "SW_WORKBENCH", "handle": "help", "label": "Help", "chair": [277, 476], "monitor": [245, 491]},
+    {"id": "D1", "group": "SE_WORKBENCH", "handle": "pm", "label": "PM", "chair": [547, 431], "monitor": [515, 446]},
+    {"id": "D2", "group": "SE_WORKBENCH", "handle": "ops", "label": "Ops", "chair": [581, 448], "monitor": [549, 463]}
+  ]
+}

@@ -16,6 +16,8 @@ MacBook 上的 Claude Code、Cursor、Grok Build、Codex 通过 hooks 把状态�
 
 旧的窗口观察（ChatObserver，依赖聊天窗口可见、读取界面）已默认停用，不再参与看板状态。如确需调试，可用 `CHAT_WATCH=on` 启动服务；其结果也不会计入任务列表。
 
+右上角可切到 **Pixel Office**（空房间 + 13 个座位名）。第一期不显示在忙/空闲/卡住。座位名单在 `assets/pixel-office/seats.json`。画幅 768×656，页面用 `object-fit: contain`，不会裁成 512 高。
+
 ## 1. 启动服务（Mac）
 
 把整个 `agent-monitor` 文件夹放到用户目录下，然后：

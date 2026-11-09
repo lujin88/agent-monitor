@@ -9,12 +9,16 @@
 !/favicon.png
 !/package.json
 !/package-lock.json
+!/assets/
+!/assets/pixel-office/
+!/assets/pixel-office/ROOM_EMPTY_V4_R2_768.png
 # Exclude backups even when they have a source-file extension.
 *backup*
 *.log
 *.json
 !package.json
 !package-lock.json
+!/assets/pixel-office/seats.json
 token.txt
 .env*
 node_modules/
