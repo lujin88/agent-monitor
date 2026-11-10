@@ -124,9 +124,9 @@ function checkApproveHook() {
     assert.equal(r.requests.length, 0, 'no approval request for payload ' + JSON.stringify(bad));
     assert.equal(r.printed, ''); assert(r.exited);
   }
-  const ok = runApprove(JSON.stringify({ session_id: 's1', cwd: '/tmp/demo', tool_name: 'Bash', tool_input: { command: 'echo synthetic' } }));
+  const ok = runApprove(JSON.stringify({ session_id: 's1', cwd: '/tmp/demo', tool_name: 'Bash', tool_input: { command: 'rm synthetic' } }));
   assert.equal(ok.requests.length, 1); assert.equal(ok.requests[0].options.path, '/ask');
-  assert.equal(ok.requests[0].body.command, 'echo synthetic'); assert.equal(ok.requests[0].body.tool, 'Bash');
+  assert.equal(ok.requests[0].body.command, 'rm synthetic'); assert.equal(ok.requests[0].body.tool, 'Bash');
 }
 
 (async () => {

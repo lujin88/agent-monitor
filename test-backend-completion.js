@@ -7,7 +7,7 @@ const EventEmitter = require('events');
 const { spawn } = require('child_process');
 
 const KEY = 'isolated-completion';
-const MODULES = ['server.js', 'approve.js', 'codex-watch.js', 'chat-watch.js', 'cursor-usage.js', 'claude-usage.js', 'grok-usage.js', 'grok-watch.js'];
+const MODULES = ['server.js', 'approve.js', 'auto-approve.js', 'codex-watch.js', 'chat-watch.js', 'cursor-usage.js', 'claude-usage.js', 'grok-usage.js', 'grok-watch.js'];
 const OFF = { CHAT_WATCH: 'off', CODEX_WATCH: 'off', CODEX_USAGE: 'off', CURSOR_USAGE: 'off', GROK_WATCH: 'off', GROK_USAGE: 'off', CLAUDE_USAGE: 'off', MONITOR_NOTIFICATIONS: 'off' };
 const pause = ms => new Promise(r => setTimeout(r, ms));
 const roots = [], servers = [];
@@ -70,7 +70,7 @@ function hookHarness() {
     __dirname: '/tmp/synthetic-monitor', URL, Buffer, setTimeout: () => 0,
     process: { argv: ['node', 'approve.js', 'codex'], env: {}, stdin, stdout: { write(s, cb) { writes.push({ s, cb }); return true; } }, exit() { exits++; } },
   });
-  stdin.emit('data', JSON.stringify({ session_id: 's', cwd: '/tmp/synthetic', tool_name: 'Bash', tool_input: { command: 'echo synthetic' } }));
+  stdin.emit('data', JSON.stringify({ session_id: 's', cwd: '/tmp/synthetic', tool_name: 'Bash', tool_input: { command: 'rm synthetic' } }));
   stdin.emit('end');
   const respond = (req, status, body) => { const res = new EventEmitter(); res.statusCode = status; res.setEncoding = () => {}; req.cb(res); if (body !== undefined) res.emit('data', body); res.emit('end'); };
   return { requests, writes, respond, exits: () => exits };
@@ -121,9 +121,9 @@ async function checkReceipts() {
   const hook = spawn(process.execPath, [path.join(s.dir, 'approve.js'), 'codex'], { env: { ...process.env, ...OFF, HOME: s.home, MONITOR_URL: s.base }, stdio: ['pipe', 'pipe', 'ignore'] });
   let out = ''; hook.stdout.setEncoding('utf8'); hook.stdout.on('data', c => { out += c; });
   const hookExit = new Promise(r => hook.once('exit', r));
-  hook.stdin.end(JSON.stringify({ session_id: 'e2e', cwd: '/tmp/synthetic', tool_name: 'Bash', tool_input: { command: 'echo synthetic-never-run' } }));
+  hook.stdin.end(JSON.stringify({ session_id: 'e2e', cwd: '/tmp/synthetic', tool_name: 'Bash', tool_input: { command: 'rm synthetic-never-run' } }));
   let card = await waitCard(s, 'e2e');
-  assert.equal(card.approval.command, 'echo synthetic-never-run');
+  assert.equal(card.approval.command, 'rm synthetic-never-run');
   let d = await call(s, 'POST', '/decide', { aid: card.approval.aid, decision: 'allow' });
   assert.deepEqual(d.json, { ok: true, delivery: 'confirmed' });
   assert.equal(await hookExit, 0);

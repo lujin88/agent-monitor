@@ -3,9 +3,11 @@
 // Shows the request on the iPad, waits for Approve / Deny, and prints the decision.
 // Usage: node approve.js <source>        (source: claude | codex)
 //
-// Safe by design: it never approves on its own. If the monitor is unreachable, the wait runs out,
-// or you choose "Handle in app" in the Dashboard, it prints nothing and the normal approval
-// prompt appears on the Mac. The Dashboard submits Approve / Deny with a single click.
+// Requests that auto-approve.js classifies as safe (read-only, edits inside the project, common
+// development commands) are approved here without asking; see that file for the exact rules,
+// and set AUTO_APPROVE=off to turn this off. Everything else goes to the iPad. If the monitor is
+// unreachable, the wait runs out, or you choose "Handle in app" in the Dashboard, it prints
+// nothing and the normal approval prompt appears on the Mac.
 //
 // Receipt: after an Approve / Deny has been written and flushed to stdout, the hook sends
 // the request's one-time receipt back (POST /ack). That confirms the hook received and
@@ -26,6 +28,15 @@ try { TOKEN = fs.readFileSync(path.join(__dirname, 'token.txt'), 'utf8').trim();
 
 // These tools need a real answer from you, not a yes/no. Report them, but never decide for you.
 const NEVER_DECIDE = new Set(['AskUserQuestion', 'ExitPlanMode']);
+
+// A missing or broken rules file must never block approvals: everything then goes to the iPad.
+let classify = () => ({ allow: false });
+try { ({ classify } = require('./auto-approve')); } catch (_) {}
+
+// One line per automatic approval, without the command itself (it can contain secrets).
+function logAuto(entry) {
+  try { fs.appendFileSync(path.join(__dirname, 'auto-approve.log'), JSON.stringify(entry) + '\n', { mode: 0o600 }); } catch (_) {}
+}
 
 let raw = '';
 let started = false;
@@ -108,6 +119,12 @@ function run() {
 
   if (NEVER_DECIDE.has(p.tool_name)) {
     return post('/event', { ...base, status: 'needs_action', message: 'Please answer this question in the agent app.' }, () => out(null), 800);
+  }
+
+  const auto = classify(p);
+  if (auto && auto.allow === true) {
+    logAuto({ at: new Date().toISOString(), source, tool: String(p.tool_name || '').slice(0, 60), rule: auto.rule, project: base.project });
+    return out({ decision: 'allow' });
   }
 
   const command =

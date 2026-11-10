@@ -156,9 +156,27 @@ Claude Code 和 Codex 在要弹批准窗口时，会先问 `approve.js`。Needs 
 
 它做了这些保护：
 
-- **它自己永远不会批准。** 服务没启动、超时（默认 60 秒）、网络断了，都会退回 Mac 上平常的批准窗口。
+- **只自动批准下面「自动批准」里列出的那几类。** 其余的，服务没启动、超时（默认 60 秒）、网络断了，都会退回 Mac 上平常的批准窗口。
 - 问你问题的类型（比如 Claude 的 `AskUserQuestion`、`ExitPlanMode`）只会提醒你，不会替你回答。
 - 没有访问密钥的请求一律拒绝，事件和批准请求只接受来自这台 Mac 本机的连接。
+
+### 一次批准多个
+
+同时有 2 个以上批准请求时，每个请求的标题前有一个勾选框（默认勾上），并且直接显示要运行的命令。顶部的 **Approve selected (N)** 一次批准所有勾上的请求，不想批准的先取消勾选。每个请求仍然单独发送、单独确认；结果汇总成一句提示，比如 “2 approved · 1 expired”。已过期的请求不会被一起批准。
+
+### 自动批准
+
+`approve.js` 会先用 `auto-approve.js` 判断请求。下面这些直接批准，不发到 iPad：
+
+- 只读工具：Read、Glob、Grep、LS
+- 在当前项目文件夹里新建、修改文件（Edit、Write）
+- 每一部分都是只读命令或常用开发命令的 shell 命令，比如 `ls`、`cat`、`git status/diff/log`、`git add/commit`、`node`、`python3`、`npm test`、`npm run …`、`mkdir`、`cp`、`mv`，而且所有路径都在项目文件夹里
+
+下面这些**照样问你**：删除（`rm` 等）、联网（`curl`、`git push/pull/fetch`、`npm install`、`npx`、网页工具）、`sudo`、改写 git 历史或丢弃改动（`reset --hard`、`checkout -- .`、`--amend`、`--force`）、项目外的路径、`.git` 里的文件、重定向 `>`、`$(...)`、变量和通配符、MCP 工具，以及任何没在上面列出的命令。
+
+注意：`node`、`python3`、`npm test` 运行的是项目里的代码，代码能做什么，它们就能做什么。这是有意放开的。
+
+自动批准会在 `auto-approve.log` 记一行（时间、来源、工具、规则、项目名），**不记命令内容**。要关掉：在 Claude Code / Codex 的启动环境里设 `AUTO_APPROVE=off`。
 
 想改等待时间：`APPROVAL_WAIT_SEC=120 node server.js`。同时把上面配置里的 `timeout` 改成比它大 30 左右。
 

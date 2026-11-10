@@ -21,6 +21,7 @@ const c = {document: w.document, getComputedStyle: w.getComputedStyle.bind(w), l
   groups: a => Object.values(a.reduce((o, s) => { (o[s.source] ??= {source: s.source, items: []}).items.push(s); return o; }, {})),
   notice: m => { c.lastNotice = m; }, dismiss: id => { c.dismissed = id; }, reviewApproval: s => { c.reviewed = s.approval.aid; }};
 c.el = (t, cls, text) => { const e = w.document.createElement(t); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+c.batchMode = false; c.batchSending = false; c.batchSkip = new Set(); // batch approval off (single requests)
 vm.createContext(c);
 const load = name => { const a = html.indexOf('function ' + name + '('); assert(a >= 0, 'Missing ' + name); let b = html.indexOf('\nfunction ', a + 1); if (b < 0) b = html.length; vm.runInContext(html.slice(a, b), c); };
 // completionVia is loaded together with drawNeed by the extractor.
