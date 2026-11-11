@@ -21,7 +21,7 @@ const PORT = Number(process.env.PORT) || 7777;
 // network, for approving from an iPad at home. Hook endpoints stay loopback-only either way.
 const LISTEN_HOST = process.env.MONITOR_HOST || '127.0.0.1';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
-const WAIT_SEC = Number(process.env.APPROVAL_WAIT_SEC) || 60; // how long an approval waits for the iPad
+const WAIT_SEC = Number(process.env.APPROVAL_WAIT_SEC) || 300; // how long an approval waits for the iPad
 const RUNNING_STALE_MS = (Number(process.env.RUNNING_STALE_MIN) || 30) * 60e3;
 const DONE_RETENTION_MS = (Number(process.env.DONE_RETENTION_HOURS) || 24 * 7) * 3600e3;
 const DATA_FILE = path.join(__dirname, 'state.json');
@@ -472,7 +472,7 @@ function decide(aid, decision) {
     else if (decision === 'none') {
       delete s.approval;
       s.status = 'needs_action';
-      s.message = 'Dashboard approval ended. Confirm this request in the agent app.';
+      s.message = `Dashboard approval ended. The agent app on the Mac is asking now; confirm this request there.`;
     } else {
       // Sent but not confirmed: the outcome is unknown until the hook's receipt arrives.
       delete s.approval;
