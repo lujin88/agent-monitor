@@ -211,6 +211,8 @@ html body .empty .empty-icon{display:none}
 .live-group-head>.live-pager{margin-left:auto;flex:none}
 .running-grid[data-count="1"]{grid-template-columns:minmax(0,min(100%,800px))}
 @container(max-width:400px){.live-group-head>.live-pager>span{display:none}.live-group-head{gap:8px}.live-count{margin-left:7px}.live-group-head>.live-pager button{width:36px}}
+/* Four narrow cards in one row: use the full card width and keep titles to 3 lines so the status line stays visible. */
+@container(max-width:360px){.live-rows{margin-left:0}.live-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}}
 @media(max-width:1200px){.ready-rows,.live-rows{margin-left:0}}
 @media(max-height:500px){.group-head,.live-group-head{height:40px}.ready-row,.live-row{padding:8px 0}}
 html[data-theme="dark"] .ready-group,html[data-theme="dark"] .live-group{background:var(--paper);border-color:var(--line);box-shadow:none}
@@ -538,7 +540,7 @@ function renderNeed(list){const box=$('need-list');if(!box.clientHeight)return;c
 function renderReady(list){const box=$('ready-list');if(!box.clientHeight)return;const now=latest?.now||Date.now(),signature=JSON.stringify([list.map(s=>[s.id,s.title,s.project,s.message,s.completionReason,ago(now-s.updatedAt)]),pageIndex.ready,box.clientWidth,box.clientHeight]);if(panelCache.ready===signature)return;const pages=stackedPages('ready',list,readyRow);pageIndex.ready=Math.min(pageIndex.ready,pages.length-1);drawReady(pages[pageIndex.ready]);pager('ready',pages.length);panelCache.ready=signature}
 function renderRun(list,now){
  const box=$('running-list');if(!box.clientHeight)return;
- const grouped=liveGroups(list),minimumWidth=372,columns=Math.max(1,Math.min(4,Math.floor((box.clientWidth+12)/minimumWidth))),pages=[];
+ const grouped=liveGroups(list),minimumWidth=290,columns=Math.max(1,Math.min(4,Math.floor((box.clientWidth+12)/minimumWidth))),pages=[];
  for(let i=0;i<grouped.length;i+=columns)pages.push(grouped.slice(i,i+columns));if(!pages.length)pages.push([]);
  pageIndex.run=Math.min(pageIndex.run,pages.length-1);
  box.style.setProperty('--run-columns',Math.max(1,Math.min(columns,grouped.length)));box.style.setProperty('--run-rows','1');
