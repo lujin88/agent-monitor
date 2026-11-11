@@ -27,7 +27,8 @@ function localMonitorUrl(value) {
   return new URL('http://127.0.0.1:7777');
 }
 const SERVER = localMonitorUrl(process.env.MONITOR_URL || 'http://127.0.0.1:7777');
-const MAX_WAIT_MS = 5 * 60 * 1000; // hard ceiling; the server's own wait ends sooner
+// Hard ceiling: the server's wait (same APPROVAL_WAIT_SEC, default 300) plus 20 s, so the server always ends first.
+const MAX_WAIT_MS = ((Number(process.env.APPROVAL_WAIT_SEC) || 300) + 20) * 1000;
 const ACK_TIMEOUT_MS = 1500;       // the server waits longer than this for the receipt
 const MAX_RESPONSE = 16 * 1024;    // a decision is tiny; anything larger is not trusted
 
