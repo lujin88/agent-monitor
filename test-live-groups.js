@@ -57,7 +57,7 @@ assert(!box.textContent.includes('unavailable'));
 console.log('Chat activity copy and recovery controls passed.');
 
 const fourSources=['codex','claude','cursor','grok'].map((source,i)=>({...tasks[i],source,id:source+':layout'}));
-for(const [width,visible,pages] of [[1760,4,1],[1440,3,2],[800,2,2],[350,1,4]]){
+for(const [width,visible,pages] of [[1760,4,1],[1440,4,1],[1200,4,1],[1120,3,2],[800,2,2],[350,1,4]]){
  Object.defineProperty(box,'clientWidth',{value:width,configurable:true});c.pageIndex.run=0;c.renderRun(fourSources,now);
  assert.equal(box.querySelectorAll('.live-group').length,visible);
  assert.equal(c.pages,pages);
