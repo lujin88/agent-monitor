@@ -69,7 +69,7 @@ node ~/agent-monitor/setup-claude.js
       { "hooks": [{ "type": "command", "command": "node ~/agent-monitor/notify.js claude running" }] }
     ],
     "PermissionRequest": [
-      { "hooks": [{ "type": "command", "command": "node ~/agent-monitor/approve.js claude", "timeout": 90 }] }
+      { "hooks": [{ "type": "command", "command": "node ~/agent-monitor/approve.js claude", "timeout": 330 }] }
     ],
     "Notification": [
       { "hooks": [{ "type": "command", "command": "node ~/agent-monitor/notify.js claude needs_action" }] }
@@ -146,7 +146,7 @@ Codex 的 hooks 和 Claude Code 是同一套结构。创建 `~/.codex/hooks.json
       { "hooks": [{ "type": "command", "command": "node /Users/你的用户名/agent-monitor/notify.js codex running", "timeout": 5 }] }
     ],
     "PermissionRequest": [
-      { "hooks": [{ "type": "command", "command": "node /Users/你的用户名/agent-monitor/approve.js codex", "timeout": 90 }] }
+      { "hooks": [{ "type": "command", "command": "node /Users/你的用户名/agent-monitor/approve.js codex", "timeout": 330 }] }
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "node /Users/你的用户名/agent-monitor/notify.js codex resume", "timeout": 5 }] }
@@ -177,7 +177,7 @@ Claude Code 和 Codex 在要弹批准窗口时，会先问 `approve.js`。Needs 
 
 它做了这些保护：
 
-- **只自动批准下面「自动批准」里列出的那几类。** 其余的，服务没启动、超时（默认 60 秒）、网络断了，都会退回 Mac 上平常的批准窗口。
+- **只自动批准下面「自动批准」里列出的那几类。** 其余的，服务没启动、超时（默认 300 秒）、网络断了，都会退回 Mac 上平常的批准窗口。
 - 问你问题的类型（比如 Claude 的 `AskUserQuestion`、`ExitPlanMode`）只会提醒你，不会替你回答。
 - 没有访问密钥的请求一律拒绝，事件和批准请求只接受来自这台 Mac 本机的连接。
 
@@ -221,7 +221,7 @@ Claude Code 和 Codex 在要弹批准窗口时，会先问 `approve.js`。Needs 
 
 自动批准会在 `auto-approve.log` 记一行（时间、来源、工具、规则、项目名），**不记命令内容**。要关掉：在 Claude Code / Codex 的启动环境里设 `AUTO_APPROVE=off`。
 
-想改等待时间：`APPROVAL_WAIT_SEC=120 node server.js`。同时把上面配置里的 `timeout` 改成比它大 30 左右。
+想改等待时间（默认 300 秒）：`APPROVAL_WAIT_SEC=60 node server.js` 可改回 60 秒。同时把上面配置里的 `timeout` 改成比它大 30 左右。
 
 要知道的代价：等待期间，Claude/Codex 会停在这一步，最长等一个等待时间，才会在 Mac 上出现平常的批准窗口。你如果正坐在 Mac 前，可以在 iPad 上点“回 Mac 处理”，或者把等待时间调短。
 
