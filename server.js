@@ -472,7 +472,7 @@ function decide(aid, decision) {
     else if (decision === 'none') {
       delete s.approval;
       s.status = 'needs_action';
-      s.message = 'Dashboard approval ended. Confirm this request in the agent app.';
+      s.message = `Dashboard approval ended after ${WAIT_SEC} seconds. The agent app on the Mac is asking now; confirm this request there.`;
     } else {
       // Sent but not confirmed: the outcome is unknown until the hook's receipt arrives.
       delete s.approval;
