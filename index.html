@@ -278,7 +278,11 @@ button:disabled{opacity:.4;cursor:default}
  .usage-section h2{font-size:var(--fs-15);line-height:var(--lh-15)}
  .usage-section .sub{display:none}
  .usage{margin-top:8px}
- .usage-item{padding:8px 12px;grid-template-columns:84px minmax(0,1fr);column-gap:8px}
+ /* Two rows per cell: account + period on one line, then amount, full-width bar and reset */
+ .usage-item{padding:8px 12px;display:flex;flex-direction:column;align-items:stretch;justify-content:center}
+ .usage-label{align-self:stretch;display:flex;align-items:center;gap:8px;margin-bottom:4px}
+ .usage-window{font-weight:400}
+ .usage-foot{white-space:nowrap}
  .usage-label .mark{width:20px;height:20px}
  .usage-name{font-size:var(--fs-12);line-height:var(--lh-12)}
  .usage-main{margin-bottom:4px}
@@ -307,7 +311,6 @@ button:disabled{opacity:.4;cursor:default}
  body{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
  .mast h1{font-size:var(--fs-20);line-height:var(--lh-20)}
  .usage{grid-template-columns:repeat(2,minmax(0,1fr))}
- .usage-item{grid-template-columns:76px minmax(0,1fr)}
  .usage-item+.usage-item:before{display:none}
  .usage-item:nth-child(even):before{display:block}
  .usage-item:nth-child(n+3){border-top:1px solid var(--line)}
