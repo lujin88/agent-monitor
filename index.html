@@ -204,15 +204,14 @@ html body .empty .empty-icon{display:none}
 .live-agent{display:flex;align-items:baseline;min-width:0;white-space:nowrap}
 .group-title span,.live-count{color:var(--muted);font-size:12px;line-height:20px;font-weight:400;letter-spacing:0;margin-left:9px;white-space:nowrap}
 .live-count:before{content:"·";margin-right:7px}
-.ready-rows,.live-rows{margin-left:42px;padding:0}
+/* All card types: task text starts at the card's left edge, under the agent icon (same in Needs, Ready, Live). */
+.ready-rows,.live-rows{margin-left:0;padding:0}
 .ready-row,.live-row{padding:10px 0;border-top:1px solid var(--line)}
 .ready-row .title,.live-title{font-size:15px;line-height:20px;font-weight:500;letter-spacing:0}
 .live-meta,.live-progress-copy{font-size:12px;line-height:16px}
 .live-group-head>.live-pager{margin-left:auto;flex:none}
 .running-grid[data-count="1"]{grid-template-columns:minmax(0,min(100%,800px))}
 @container(max-width:400px){.live-group-head>.live-pager>span{display:none}.live-group-head{gap:8px}.live-count{margin-left:7px}.live-group-head>.live-pager button{width:36px}}
-/* Four narrow cards in one row: use the full card width and keep titles to 3 lines so the status line stays visible. */
-@container(max-width:360px){.live-rows{margin-left:0}.live-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}}
 @media(max-width:1200px){.ready-rows,.live-rows{margin-left:0}}
 @media(max-height:500px){.group-head,.live-group-head{height:40px}.ready-row,.live-row{padding:8px 0}}
 html[data-theme="dark"] .ready-group,html[data-theme="dark"] .live-group{background:var(--paper);border-color:var(--line);box-shadow:none}
