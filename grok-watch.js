@@ -42,8 +42,10 @@ function stateTracker({seed=[],onEvent,now=Date.now,names=new Map()}){
    const active=x.isRunning===true||x.isComposingMessage===true||x.isRetrying===true||x.hasRunningSubagents===true;
    if(x.awaiting||active){
     r.seenActive=true;
-    const status=now()>r.expiresAt?'unobserved':x.awaiting?'needs_action':'running';
-    emit(key,r,status,x.isRetrying?'Retrying':x.isComposingMessage?'Writing a response':x.hasRunningSubagents?'Subtasks running':'Working');
+    // Grok cannot be approved from the Monitor, and Lu does not want to be pinged for it:
+    // a Grok Bot waiting for input stays in Live activity instead of Needs your action.
+    const status=now()>r.expiresAt?'unobserved':'running';
+    emit(key,r,status,x.awaiting?'Waiting in Grok Bot':x.isRetrying?'Retrying':x.isComposingMessage?'Writing a response':x.hasRunningSubagents?'Subtasks running':'Working');
    }else if(r.seenActive){r.seenActive=false;emit(key,r,'done','Activity ended');}
    records.set(key,r);
   }
