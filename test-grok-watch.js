@@ -5,7 +5,7 @@ const state=(live,snapshot=false)=>({agentState:{live,snapshot}});
 const row=(id,extra={})=>({agentId:id,sessionId:'s',updatedAtMs:String(now),staleAfterMs:'90000',...extra});
 tracker.frame(state([row('a')],true));assert.equal(events.length,0,'Startup idle is not a completion');
 tracker.frame(state([row('a',{isRunning:true}),row('b',{hasRunningSubagents:true})]));assert.deepEqual(events.map(e=>e.status),['running','running']);assert.notEqual(events[0].session,events[1].session);
-tracker.frame(state([row('a',{isRunning:true,awaiting:{reason:'private input'}})]));assert.equal(events.at(-1).status,'needs_action');assert(!JSON.stringify(events).includes('private input'));
+tracker.frame(state([row('a',{isRunning:true,awaiting:{reason:'private input'}})]));assert.equal(events.at(-1).status,'running','A waiting Grok Bot stays in Live activity, not Needs your action');assert(!JSON.stringify(events).includes('private input'));
 tracker.frame(state([row('a',{isComposingMessage:true})]));assert.equal(events.at(-1).progress.lastActivity,'Writing a response');
 tracker.frame(state([row('a')]));assert.equal(events.at(-1).status,'done');assert.equal(events.at(-1).reason,'grok-state');
 const doneCount=events.filter(e=>e.status==='done').length;tracker.frame(state([row('a')]));assert.equal(events.filter(e=>e.status==='done').length,doneCount);
