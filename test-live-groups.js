@@ -28,14 +28,14 @@ const groupRows=source=>[...box.querySelectorAll('[data-source="'+source+'"] .li
 const beforeClaude=groupRows('claude'),beforeCursor=groupRows('cursor');
 box.querySelector('[aria-label="Next codex tasks"]').click();assert.equal(groupRows('claude'),beforeClaude);assert.equal(groupRows('cursor'),beforeCursor);
 for(const source of ['codex','claude','cursor']){const ids=new Set();const group=box.querySelector('[data-source="'+source+'"]');const previous=group.querySelector('[aria-label^="Previous"]');while(!previous.disabled)previous.click();for(let i=0;i<10;i++){group.querySelectorAll('.live-row').forEach(r=>ids.add(r.dataset.taskId));const next=group.querySelector('[aria-label^="Next"]');if(next.disabled)break;next.click()}assert.equal(ids.size,6,source+' all tasks reachable');}
-assert(box.textContent.includes('Working · step details not reported'),'Active tasks must not look disconnected or imply details are coming');
+assert(!box.textContent.includes('step details not reported'),'No filler copy when a source reports no step details');assert(box.querySelector('.live-track[role=progressbar]')&&box.textContent.includes('Running'),'Active tasks must not look disconnected: moving track and Running status');
 for(const width of [1120,1200,1440,1760])for(const height of [180,216,300]){Object.defineProperty(box,'clientWidth',{value:width,configurable:true});Object.defineProperty(box,'clientHeight',{value:height,configurable:true});c.renderRun(multi,now);assert.equal(box.querySelectorAll('.live-group').length,3,width+' by '+height+' panel shows three agents');}
 c.renderRun([],now);assert.equal(box.childElementCount,0,'An empty activity panel must stay blank');
 assert.equal(box.querySelectorAll('dialog').length,0);
 c.renderRun([{...tasks[0],progress:{source:'local-events',startedAt:now-60000,completedActions:4,lastActivity:'Files updated'}}],now);
 assert(box.textContent.includes('4 actions completed · Files updated'));
 assert(box.querySelector('[role=progressbar]'));assert(!box.querySelector('[aria-valuenow]'),'Do not invent a percentage');
-assert(html.includes('width:100vw'));assert(html.includes('html body .empty'));
+assert(html.includes('width:100vw'));assert(!/el\([^)]*'empty'/.test(html),'Empty panels stay blank: no boxed empty-state element');
 assert(!html.includes('function showTask('),'Remove duplicate task detail modal');
 console.log('Grouped activity checks passed: 20 tasks reachable, one header per agent, full text, unknown state, stable updates, pagination clamping, narrow group pages, empty state; scripts parse.');
 
