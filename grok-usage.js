@@ -55,7 +55,7 @@ function createGrokPoller({onUsage,onStatus,readUsage=readGrokUsage}) {
     if(busy||process.env.GROK_USAGE==='off')return;
     busy=true;
     try { const windows=await readUsage();if(windows.length){onUsage(windows);onStatus('ok');}else onStatus('nodata'); }
-    catch(e){onStatus(['missing','account_mismatch','timeout','rate_limited'].includes(e.status)?e.status:'error');}
+    catch(e){onStatus(['missing','account_mismatch','timeout','rate_limited','keychain'].includes(e.status)?e.status:'error');}
     finally{busy=false;}
   };
 }
