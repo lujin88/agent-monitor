@@ -6,8 +6,47 @@ const { pathToFileURL } = require('url');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
+const crypto = require('crypto');
 
-async function readAccessToken() {
+// Cursor 3.x encrypts cursorAuth/accessToken at rest with Electron safeStorage:
+// "cursor-safe-storage:v1:" + base64("v10" + AES-128-CBC ciphertext). On macOS the key is
+// PBKDF2-SHA1(Keychain "Cursor Safe Storage" password, "saltysalt", 1003 rounds, 16 bytes),
+// IV = 16 spaces (Chromium os_crypt). The derived key stays in memory only.
+const SAFE_PREFIX = 'cursor-safe-storage:v1:';
+let safeKey = null;
+function deriveSafeKey(password) {
+  return crypto.pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1');
+}
+function decryptSafeStorage(value, key) {
+  const raw = Buffer.from(value.slice(SAFE_PREFIX.length), 'base64');
+  if (raw.subarray(0, 3).toString() !== 'v10') throw new Error('Unsupported Cursor token encryption');
+  const d = crypto.createDecipheriv('aes-128-cbc', key, Buffer.alloc(16, ' '));
+  return Buffer.concat([d.update(raw.subarray(3)), d.final()]).toString('utf8');
+}
+function readKeychainPassword() {
+  return new Promise((resolve, reject) => {
+    // macOS asks Lu once to allow this; "Always Allow" keeps it working after restarts.
+    execFile('/usr/bin/security', ['find-generic-password', '-w', '-s', 'Cursor Safe Storage'],
+      { timeout: 60000, maxBuffer: 4096 }, (error, stdout) => {
+        if (error || !stdout.trim()) return reject(Object.assign(new Error('Cursor Keychain key unavailable'), { status: 'keychain' }));
+        resolve(stdout.trim());
+      });
+  });
+}
+async function plainToken(stored, { readPassword = readKeychainPassword } = {}) {
+  if (!stored.startsWith(SAFE_PREFIX)) return stored;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Cursor and Grok poll at the same time: share one Keychain read so macOS asks only once.
+    if (!safeKey) safeKey = readPassword().then(deriveSafeKey);
+    let key;
+    try { key = await safeKey; } catch (e) { safeKey = null; throw e; }
+    try { return decryptSafeStorage(stored, key); }
+    catch (_) { safeKey = null; } // key changed (new Keychain entry): read it once more
+  }
+  throw Object.assign(new Error('Cursor token could not be decrypted'), { status: 'keychain' });
+}
+
+async function readStoredToken() {
   const db = path.join(os.homedir(), 'Library/Application Support/Cursor/User/globalStorage/state.vscdb');
   const unavailable = () => Object.assign(new Error('Cursor login unavailable'), { status: 'missing' });
   const query = target => new Promise((resolve, reject) => {
@@ -31,6 +70,10 @@ async function readAccessToken() {
     if (hasJournal() || before.mtimeMs !== after.mtimeMs || before.size !== after.size) throw unavailable();
     return token;
   } catch (_) { throw unavailable(); }
+}
+
+async function readAccessToken(options) {
+  return plainToken(await readStoredToken(), options);
 }
 
 async function readCursorUsage() {
@@ -93,9 +136,9 @@ function createCursorPoller({ onUsage, onStatus, readUsage = readCursorUsage }) 
       if (windows.length) { onUsage(windows); onStatus('ok'); }
       else onStatus('nodata');
     } catch (error) {
-      onStatus(['missing', 'timeout'].includes(error.status) ? error.status : 'error');
+      onStatus(['missing', 'timeout', 'keychain'].includes(error.status) ? error.status : 'error');
     } finally { busy = false; }
   };
 }
 
-module.exports = { readAccessToken, cursorWindows, readCursorUsage, createCursorPoller };
+module.exports = { readAccessToken, plainToken, decryptSafeStorage, deriveSafeKey, SAFE_PREFIX, cursorWindows, readCursorUsage, createCursorPoller };
